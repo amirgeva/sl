@@ -1,0 +1,1 @@
+add_library(datastr STATIC vector.c vector.h strhash.c strhash.h)

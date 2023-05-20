@@ -1,0 +1,1 @@
+add_library(utils STATIC memory.c memory.h)
