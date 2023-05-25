@@ -1,5 +1,7 @@
 build/
 .idea/
+z80/
+*.bin
 
 # Prerequisites
 *.d

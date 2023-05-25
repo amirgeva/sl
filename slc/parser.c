@@ -133,8 +133,9 @@ void init_node(Node* node, Node* parent)
 	node->child = 0;
 	node->parameters = 0;
 	node->type = 0;
-	node->var_type = 0;
-	node->type_name = 0;
+	node->data_type.type = 0;
+	node->data_type.sub_type = 0;
+	node->data_type.type_name = 0;
 	node->name = 0;
 	if (parent)
 		add_child(parent, node);
@@ -238,12 +239,23 @@ Node* parse_lvalue()
 Node* parse_expression()
 {
 	Token t;
-	Node* node = parse_value();
+	Node* node = 0;
+	NEXT_TOKEN;
+	if (t.type == LPAREN)
+	{
+		node = allocate_node(LPAREN, 0);
+		Node* expr = parse_expression();
+		if (!expr) ERROR_RET;
+		add_child(node, expr);
+		EXPECT(RPAREN);
+		return node;
+	}
+	--cur_index;
+	node = parse_value();
 	if (!node) return 0;
 	NEXT_TOKEN
 	if (t.type == PLUS || t.type == MINUS || t.type == LSH || t.type == RSH ||
-		t.type == GT || t.type == LT || t.type == GE || t.type == LE ||
-		t.type == EQ || t.type == AMP || t.type == PIPE || t.type==CARET)
+		t.type == AMP || t.type == PIPE || t.type==CARET)
 	{
 		Node* oper = allocate_node(t.type, 0);
 		add_child(oper, node);
@@ -256,6 +268,45 @@ Node* parse_expression()
 	else --cur_index;
 	return node;
 }
+
+Node* parse_condition()
+{
+	Token t;
+	Node* node = 0;
+	NEXT_TOKEN;
+	if (t.type == LPAREN)
+	{
+		node = allocate_node(LPAREN, 0);
+		Node* cond = parse_condition();
+		if (!cond) ERROR_RET;
+		add_child(node, cond);
+		EXPECT(RPAREN);
+		return node;
+	}
+	--cur_index;
+	node=parse_value();
+	if (!node) return 0;
+	NEXT_TOKEN
+	if (t.type == GT || t.type == LT || t.type == GE || t.type == LE ||
+		t.type == EQ || t.type == NE)
+	{
+		Node* oper = allocate_node(t.type, 0);
+		add_child(oper, node);
+		node = oper;
+		Node* right = parse_value();
+		if (right)
+			add_child(node, right);
+		else ERROR_RET;
+	}
+	else --cur_index;
+	return node;
+}
+
+/*
+t.type == GT || t.type == LT || t.type == GE || t.type == LE ||
+		t.type == EQ ||
+*/
+
 
 Node* parse_call()
 {
@@ -326,7 +377,7 @@ Node* parse_statement()
 	if (t.type == WHILE)
 	{
 		node = allocate_node(WHILE, 0);
-		Node* cond = parse_expression();
+		Node* cond = parse_condition();
 		if (!cond) ERROR_RET;
 		add_parameter(node, cond);
 		new_block = 1;
@@ -335,7 +386,7 @@ Node* parse_statement()
 	if (t.type == IF)
 	{
 		node = allocate_node(IF, 0);
-		Node* cond = parse_expression();
+		Node* cond = parse_condition();
 		if (!cond) ERROR_RET;
 		add_parameter(node, cond);
 		new_block = 1;
@@ -391,12 +442,13 @@ Node* parse_fun()
 Node* parse_var()
 {
 	Node* node = allocate_node(VAR, 0);
+	node->data_type.type = VAR;
 	Token t;
 	//EXPECT(VAR);
 	NEXT_TOKEN
 	if (t.type == ARRAY)
 	{
-		node->type = ARRAY;
+		node->data_type.type = ARRAY;
 		NEXT_TOKEN;
 		if (t.type == NUMBER)
 		{
@@ -405,14 +457,21 @@ Node* parse_var()
 			add_parameter(node, length_node);
 			NEXT_TOKEN
 		}
+		else
+		{
+			// Pointer type, no compile time length
+		}
 	}
 	if (t.type == BYTE || t.type == WORD || t.type == SBYTE || t.type == SWORD)
-		node->var_type = t.type;
+	{
+		node->data_type.sub_type = PRIMITIVE;
+		node->data_type.type_name = t.type;
+	}
 	else if (t.type == IDENT)
 	{
 		//node->type = ARRAY;
-		node->var_type = STRUCT;
-		node->type_name = t.value;
+		node->data_type.sub_type = STRUCT;
+		node->data_type.type_name = t.value;
 	}
 	else ERROR_RET;
 	EXPECT(IDENT);
@@ -438,6 +497,7 @@ Node* parse_struct_var()
 		EXPECT(EOL);
 		pop_context();
 	}
+	else ERROR_RET;
 	return cur_node;
 }
 

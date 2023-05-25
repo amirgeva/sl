@@ -1,1 +1,1 @@
-add_library(utils STATIC memory.c memory.h)
+add_library(utils STATIC memory.c memory.h utils.c utils.h)

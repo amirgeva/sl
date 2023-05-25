@@ -5,18 +5,24 @@
 
 typedef byte (*token_func)(word index, Token* t);
 
+typedef struct base_type_
+{
+	byte type;		// ARRAY / VAR
+	byte sub_type;	// STRUCT / PRIMITIVE
+	word type_name;	// BYTE / WORD / struct_name
+} BaseType;
+
 typedef struct node_ Node;
 
 struct node_
 {
-	byte type;
-	byte var_type;
-	word type_name;
-	word name;
-	Node* parent;
-	Node* sibling;
-	Node* child;
-	Node* parameters;
+	byte		type;
+	BaseType	data_type;
+	word		name;
+	Node*		parent;
+	Node*		sibling;
+	Node*		child;
+	Node*		parameters;
 };
 
 void p_init(word size, token_func f);

@@ -11,12 +11,14 @@
 #ifdef CODE_FILE
 
 FILE* code_stream = 0;
+FILE* output_file = 0;
 
 byte next_byte()
 {
 	if (!code_stream)
 	{
-		code_stream = fopen("tetris.sl", "r");
+		//code_stream = fopen("examples/tetris.sl", "r");
+		code_stream = fopen("examples/sample.sl", "r");
 		if (!code_stream)
 		{
 			fprintf(stderr, "Failed to open code file.\n");
@@ -31,6 +33,22 @@ byte next_byte()
 		return 0;
 	}
 	return (byte)(res & 255);
+}
+
+byte write_output(word offset, const byte* data, word length)
+{
+	if (!output_file) output_file = fopen("out.bin", "wb");
+	fseek(output_file, offset, SEEK_SET);
+	return fwrite(data, 1, length, output_file);
+}
+
+void close_output()
+{
+	if (output_file)
+	{
+		fclose(output_file);
+		output_file = 0;
+	}
 }
 
 #else
@@ -60,6 +78,8 @@ byte next_byte()
 	return *ptr++;
 }
 
+byte write_output(word offset, byte* data, word length) { return 1; }
+
 #endif
 
 int main(/* int argc, char* argv[] */)
@@ -69,11 +89,15 @@ int main(/* int argc, char* argv[] */)
 	lex_init();
 	p_init(lex_size(), lex_get);
 	p_parse();
+	gen_init();
 #ifdef PRINTS
 	//p_print();
-	//print_tree(p_root());
+	print_tree(p_root());
 	//scan_sizes(p_root());
 #endif
+	generate_code(p_root(), write_output);
+	close_output();
+	gen_shut();
 	p_shut();
 	lex_shut();
 	sh_shut();

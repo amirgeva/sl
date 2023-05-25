@@ -108,3 +108,8 @@ byte sh_text(char* text, word sh)
 	}
 	return 0;
 }
+
+word sh_temp()
+{
+	return allocate_id();
+}

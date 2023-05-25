@@ -44,11 +44,13 @@
 #define AMP			50
 #define PIPE		51
 #define CARET		52
+#define NE			53
 
 #define ASSIGN		60
 #define TARGET		61
 #define CALL		62
 #define INDEX		63
+#define PRIMITIVE	64
 
 #define ERROR		255
 

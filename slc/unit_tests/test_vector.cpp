@@ -2,7 +2,7 @@
 extern "C" {
 #include <vector.h>
 #include <memory.h>
-word multiply(word a, word b);
+#include <utils.h>
 }
 
 

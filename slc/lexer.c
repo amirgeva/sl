@@ -149,12 +149,26 @@ static void analyze()
 				last_char = b;
 				ADD(LT);
 			}
+			else
 			if (buffer[0] == '>')
 			{
 				if (b == '>') ADD(RSH);
 				if (b == '=') ADD(GE);
 				last_char = b;
 				ADD(GT);
+			}
+			else
+			if (buffer[0] == '!')
+			{
+				if (b == '=')
+				{
+					ADD(NE);
+				}
+				else
+				{
+					error = 1;
+					break;
+				}
 			}
 		}
 		if (state == INITIAL)
@@ -186,6 +200,7 @@ static void analyze()
 			case '\n': ADD(EOL);
 			case '<':
 			case '>':
+			case '!':
 				add_byte(b); state = OPER; continue;
 			}
 			if (is_alpha(b) || b == '_')

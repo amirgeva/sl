@@ -46,20 +46,14 @@ void print_array(Node* node)
 	printf("array ");
 	if (size > 0)
 		printf("%d ", size);
-	if (node->var_type == STRUCT)
-		print_name(node->type_name);
-	else
-		print_type(node->var_type);
+	print_name(node->data_type.type_name);
 	printf(" ");
 	print_name(node->name);
 }
 
 void print_var(Node* node)
 {
-	if (node->var_type == STRUCT)
-		print_name(node->type_name);
-	else
-		print_type(node->var_type);
+	print_name(node->data_type.type_name);
 	printf(" ");
 	print_name(node->name);
 }
@@ -87,6 +81,7 @@ void print_cond(const char* title, Node* node)
 {
 	printf("%s ", title);
 	print_expression(node->parameters);
+	printf("\n");
 }
 
 void print_value(Node* node)
@@ -156,6 +151,7 @@ void print_assign(Node* node)
 	printf("=");
 	if (value)
 		print_expression(value);
+	printf("\n");
 }
 
 void print_call(Node* node)
@@ -211,26 +207,40 @@ void print_code_tree(Node* node, int indent)
 		print_code_tree(node->sibling, indent);
 }
 
+void print_base_type(BaseType* base_type, Node* parameters)
+{
+	if (base_type->type == ARRAY)
+	{
+		printf("array ");
+		if (parameters) printf("%hd ",parameters->name);
+	}
+	if (base_type->sub_type==STRUCT) print_name(base_type->type_name);
+	else print_type(base_type->type_name);
+}
+
 void print_tree_node(Node* node, int indent)
 {
 	if (!node) return;
 	switch (node->type)
 	{
-	case ROOT: print_indent(indent); printf("ROOT\n"); break;
-	case FUN: print_indent(indent); printf("FUN "); print_name(node->name); printf("\n"); break;
-	case VAR:
-	case ARRAY: print_indent(indent); printf("VAR "); print_name(node->name); printf("\n"); break;
-	case WHILE: print_indent(indent); printf("WHILE\n"); break;
-	case IF: print_indent(indent); printf("IF\n"); break;
+	case ROOT:	print_indent(indent); printf("ROOT\n"); break;
+	case FUN:	print_indent(indent); printf("FUN "); print_name(node->name); printf("\n"); break;
+	case STRUCT:print_indent(indent); printf("STRUCT "); print_name(node->name); printf("\n"); break;
+	case VAR:	print_indent(indent); printf("VAR "); print_base_type(&node->data_type, node->parameters); printf(" "); print_name(node->name); printf("\n"); break;
+	case ASSIGN:print_indent(indent); print_assign(node); break;
+	case WHILE: print_indent(indent); print_cond("WHILE", node); break;
+	case IF:	print_indent(indent); print_cond("IF", node); break;
 	}
 }
 
 void print_tree_nodes(Node* node, int indent)
 {
-	if (!node) return;
-	print_tree_node(node, indent);
-	print_tree_nodes(node->child, indent + 2);
-	print_tree_nodes(node->sibling, indent);
+	while (node)
+	{
+		print_tree_node(node, indent);
+		print_tree_nodes(node->child, indent + 2);
+		node = node->sibling;
+	}
 }
 
 void print_tree(Node* root)
