@@ -6,7 +6,6 @@
 #define CONTEXT_LIMIT 16
 
 
-#define ERROR_RET { error=1; if (node) release_node(node); return 0; }
 #define VERIFY(x,y) if (x!=y) ERROR_RET;
 #define NEXT_TOKEN if (!get_token(cur_index++, &t)) ERROR_RET
 #define EXPECT(x) { NEXT_TOKEN; if (t.type != x) ERROR_RET; }
@@ -18,15 +17,15 @@ typedef struct constant_
 } Constant;
 
 Vector* constants;
-Node root;
+Node root_node;
 Node* cur_node=0;
 
 typedef Node* (*state)();
 
 typedef struct context_
 {
-	state ctx_state;
-	Node* node;
+	state	ctx_state;
+	Node*	node;
 } Context;
 
 
@@ -34,14 +33,59 @@ static Context context_stack[CONTEXT_LIMIT];
 static byte  error = 0;
 static byte  context_depth = 0xFF;
 static word  cur_index = 0;
-static word  tokens_size;
+//static word  tokens_size;
 static token_func get_lex_token = 0;
 static word  line_number = 1;
+static word  function_count=0;
+
+void add_child(Node* parent, Node* child);
+
+void init_node(Node* node, Node* parent)
+{
+	node->parent = parent;
+	node->sibling = 0;
+	node->child = 0;
+	node->parameters = 0;
+	node->type = 0;
+	node->data_type.type = 0;
+	node->data_type.sub_type = 0;
+	node->data_type.type_name = 0;
+	node->name = 0;
+	if (parent)
+		add_child(parent, node);
+}
+
+Node* allocate_node(byte type, Node* parent)
+{
+	Node* new_node = (Node*)allocate(sizeof(Node));
+	init_node(new_node, parent);
+	new_node->type = type;
+	return new_node;
+}
+
+void release_node(Node* node)
+{
+	if (!node) return;
+	if (node->child) release_node(node->child);
+	if (node->sibling) release_node(node->sibling);
+	if (node->parameters) release_node(node->parameters);
+	release(node);
+}
+
+
+Node* error_func(Node* node)
+{
+	error=1;
+	if (node) release_node(node);
+	return 0;
+}
+
+#define ERROR_RET  return error_func(node)
 
 byte get_token(word index, Token* t)
 {
-	if (index >= tokens_size) return 0;
-	if (!get_lex_token(index, t)) return 0;
+	//if (index >= tokens_size) return EOC;
+	if (!get_lex_token(index, t)) return EOC;
 	if (t->type == IDENT)
 	{
 		Constant c;
@@ -126,42 +170,10 @@ void add_parameter(Node* node, Node* param)
 	}
 }
 
-void init_node(Node* node, Node* parent)
-{
-	node->parent = parent;
-	node->sibling = 0;
-	node->child = 0;
-	node->parameters = 0;
-	node->type = 0;
-	node->data_type.type = 0;
-	node->data_type.sub_type = 0;
-	node->data_type.type_name = 0;
-	node->name = 0;
-	if (parent)
-		add_child(parent, node);
-}
-
-Node* allocate_node(byte type, Node* parent)
-{
-	Node* new_node=(Node*)allocate(sizeof(Node));
-	init_node(new_node, parent);
-	new_node->type = type;
-	return new_node;
-}
-
-void release_node(Node* node)
-{
-	if (!node) return;
-	if (node->child) release_node(node->child);
-	if (node->sibling) release_node(node->sibling);
-	if (node->parameters) release_node(node->parameters);
-	release(node);
-}
-
 void release_root()
 {
-	if (root.child) release_node(root.child);
-	root.child = 0;
+	if (root_node.child) release_node(root_node.child);
+	root_node.child = 0;
 }
 
 Node* parse_lvalue();
@@ -172,7 +184,7 @@ Node* parse_value()
 {
 	Token t;
 	Node* node = 0;
-	NEXT_TOKEN
+	NEXT_TOKEN;
 	if (t.type == NUMBER)
 	{
 		node = allocate_node(NUMBER, 0);
@@ -187,9 +199,9 @@ Node* parse_lvalue()
 {
 	Token t;
 	Node* node = allocate_node(IDENT, 0);
-	NEXT_TOKEN
+	NEXT_TOKEN;
 	node->name = t.value;
-	NEXT_TOKEN
+	NEXT_TOKEN;
 	if (t.type == LPAREN)
 	{
 		cur_index -= 2; // Undo ident and LPAREN
@@ -231,7 +243,7 @@ Node* parse_lvalue()
 			--cur_index;
 			break;
 		}
-		NEXT_TOKEN
+		NEXT_TOKEN;
 	}
 	return node;
 }
@@ -240,7 +252,7 @@ Node* parse_expression()
 {
 	Token t;
 	Node* node = 0;
-	NEXT_TOKEN;
+	NEXT_TOKEN;;
 	if (t.type == LPAREN)
 	{
 		node = allocate_node(LPAREN, 0);
@@ -253,7 +265,7 @@ Node* parse_expression()
 	--cur_index;
 	node = parse_value();
 	if (!node) return 0;
-	NEXT_TOKEN
+	NEXT_TOKEN;
 	if (t.type == PLUS || t.type == MINUS || t.type == LSH || t.type == RSH ||
 		t.type == AMP || t.type == PIPE || t.type==CARET)
 	{
@@ -273,7 +285,7 @@ Node* parse_condition()
 {
 	Token t;
 	Node* node = 0;
-	NEXT_TOKEN;
+	NEXT_TOKEN;;
 	if (t.type == LPAREN)
 	{
 		node = allocate_node(LPAREN, 0);
@@ -286,7 +298,7 @@ Node* parse_condition()
 	--cur_index;
 	node=parse_value();
 	if (!node) return 0;
-	NEXT_TOKEN
+	NEXT_TOKEN;
 	if (t.type == GT || t.type == LT || t.type == GE || t.type == LE ||
 		t.type == EQ || t.type == NE)
 	{
@@ -312,20 +324,20 @@ Node* parse_call()
 {
 	Token t;
 	Node* node = allocate_node(CALL, 0);
-	NEXT_TOKEN
+	NEXT_TOKEN;
 	node->name = t.value;
 	EXPECT(LPAREN);
 	byte param_count = 0;
 	while (1)
 	{
-		NEXT_TOKEN
+		NEXT_TOKEN;
 		if (t.type == RPAREN) return node;
 		if (param_count > 0)
 		{
 			if (t.type != COMMA) ERROR_RET;
 		}
 		else --cur_index;
-		Node* param = parse_value();
+		Node* param = parse_expression();
 		if (!param) ERROR_RET;
 		add_parameter(node, param);
 		++param_count;
@@ -334,10 +346,10 @@ Node* parse_call()
 
 Node* parse_statement()
 {
-	int new_block = 0;
+	byte new_block = 0;
 	Node* node = 0;
 	Token t;
-	NEXT_TOKEN
+	NEXT_TOKEN;
 	if (t.type == EOL)
 		return cur_node;
 	if (t.type == RETURN)
@@ -357,7 +369,7 @@ Node* parse_statement()
 	if (t.type == IDENT)
 	{
 		// Could be assignment or function call
-		NEXT_TOKEN
+		NEXT_TOKEN;
 		cur_index -= 2; // Undo ident and LPAREN
 		if (t.type == LPAREN)
 			node = parse_call();
@@ -388,8 +400,40 @@ Node* parse_statement()
 		node = allocate_node(IF, 0);
 		Node* cond = parse_condition();
 		if (!cond) ERROR_RET;
+		while (1)
+		{
+			NEXT_TOKEN;
+			if (t.type == EOL)
+			{
+				--cur_index;
+				break;
+			}
+			if (t.type == PIPE || t.type == AMP)
+			{
+				Node* combined=allocate_node(t.type,0);
+				add_child(combined, cond);
+				cond = parse_condition();
+				if (!cond) ERROR_RET;
+				add_child(combined, cond);
+				cond = combined;
+			}
+		}
+		if (!cond) ERROR_RET;
 		add_parameter(node, cond);
 		new_block = 1;
+	}
+	else
+	if (t.type == ELSE)
+	{
+		if (cur_node->type != IF) ERROR_RET;
+		cur_node->type = IFELSE;
+		Node* true_side = allocate_node(BLOCK, 0);
+		true_side->child = cur_node->child;
+		cur_node->child = 0;
+		add_child(cur_node, true_side);
+		Node* false_side = allocate_node(BLOCK, 0);
+		add_child(cur_node, false_side);
+		cur_node = false_side;
 	}
 	else
 	if (t.type == END)
@@ -445,7 +489,7 @@ Node* parse_var()
 	node->data_type.type = VAR;
 	Token t;
 	//EXPECT(VAR);
-	NEXT_TOKEN
+	NEXT_TOKEN;
 	if (t.type == ARRAY)
 	{
 		node->data_type.type = ARRAY;
@@ -455,7 +499,7 @@ Node* parse_var()
 			Node* length_node = allocate_node(NUMBER, 0);
 			length_node->name = t.value;
 			add_parameter(node, length_node);
-			NEXT_TOKEN
+			NEXT_TOKEN;
 		}
 		else
 		{
@@ -483,7 +527,7 @@ Node* parse_struct_var()
 {
 	Node* node=0;
 	Token t;
-	NEXT_TOKEN
+	NEXT_TOKEN;
 	if (t.type == VAR)
 	{
 		node = parse_var();
@@ -507,10 +551,12 @@ Node* parse_global()
 {
 	Token t;
 	Node* node = 0;
-	NEXT_TOKEN
-	if (t.type == EOL) return &root;
-	if (t.type == VAR)
+	NEXT_TOKEN;
+	if (t.type == EOC) return 0;
+	if (t.type == EOL) return &root_node;
+	if (t.type == VAR) 
 	{
+		if (function_count>0) ERROR_RET;
 		node = parse_var();
 		if (!node) ERROR_RET;
 		EXPECT(EOL);
@@ -520,7 +566,7 @@ Node* parse_global()
 	{
 		node = parse_fun();
 		if (!node) ERROR_RET;
-		add_child(&root, node);
+		add_child(&root_node, node);
 		push_context(parse_statement, node);
 	}
 	else if (t.type == STRUCT)
@@ -529,7 +575,7 @@ Node* parse_global()
 		EXPECT(IDENT);
 		node->name = t.value;
 		EXPECT(EOL);
-		add_child(&root, node);
+		add_child(&root_node, node);
 		push_context(parse_struct_var, node);
 	}
 	else if (t.type == EXTERN)
@@ -550,23 +596,22 @@ Node* parse_global()
 	}
 	else
 	{ error = 1; return 0; }
-	return &root;
+	return &root_node;
 }
 
 
 
 
 
-void p_init(word size, token_func f)
+void p_init(token_func f)
 {
 	constants = vector_new(sizeof(Constant));
 	error = 0;
-	tokens_size = size;
 	get_lex_token = f;
-	init_node(&root, 0);
-	root.type = ROOT;
-	push_context(parse_global, &root);
-	cur_node = &root;
+	init_node(&root_node, 0);
+	root_node.type = ROOT;
+	push_context(parse_global, &root_node);
+	cur_node = &root_node;
 	cur_index = 0;
 }
 
@@ -576,22 +621,25 @@ void p_shut()
 	vector_shut(constants);
 }
 
-byte p_parse()
+Node* p_parse()
 {
+	Node* res=0;
 	while (error == 0)
 	{
 		state current = context();
 		if (!current()) break;
-#ifdef PRINTS
-		//printf("\n\n----------------------------------------------\n");
-		//p_print();
-#endif
+		if (context_depth == 0 && root_node.child)
+		{
+			res=root_node.child;
+			root_node.child=root_node.child->sibling;
+			break;
+		}
 	}
-	return (error == 0 ? 1 : 0);
+	return (error == 0 ? res : 0);
 }
 
 Node* p_root()
 {
-	return &root;
+	return &root_node;
 }
 

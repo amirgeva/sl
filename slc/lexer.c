@@ -15,6 +15,7 @@ static byte bpos = 0;
 static byte last_char = 0;
 static byte error = 0;
 static word line = 0;
+static word token_offset = 0;
 static Vector* tokens;
 
 word state = INITIAL;
@@ -93,6 +94,7 @@ static byte close_alpha_token(Token* t)
 	if (compare((const char*)buffer, "array") == 0) { t->type = ARRAY; return 1; }
 	if (compare((const char*)buffer, "addr") == 0) { t->type = ADDR; return 1; }
 	if (compare((const char*)buffer, "if") == 0) { t->type = IF; return 1; }
+	if (compare((const char*)buffer, "else") == 0) { t->type = ELSE; return 1; }
 	if (compare((const char*)buffer, "while") == 0) { t->type = WHILE; return 1; }
 	if (compare((const char*)buffer, "struct") == 0) { t->type = STRUCT; return 1; }
 	if (compare((const char*)buffer, "var") == 0) { t->type = VAR; return 1; }
@@ -125,7 +127,7 @@ word lex_line()
 static void analyze()
 {
 	byte b;
-	while (1)
+	while (vector_size(tokens)<12)
 	{
 		if (error) return;
 		if (last_char == 0)
@@ -260,23 +262,28 @@ void lex_init()
 	last_char = 0;
 	bpos = 0;
 	line = 1;
+	token_offset = 0;
 	tokens = vector_new(sizeof(Token));
-	analyze();
 }
 
-word lex_size()
-{
-	return (word)vector_size(tokens);
-}
+//word lex_size()
+//{
+//	return (word)vector_size(tokens);
+//}
 
 byte lex_get(word index, Token* t)
 {
-	if (index < lex_size())
+	if (index < token_offset) return 0; // Cannot look back more than 4 tokens
+	index-=token_offset;
+	if (index>=10) return 0; // Cannot look ahead too far
+	if (index>=vector_size(tokens)) analyze();
+	vector_get(tokens, index, t);
+	if (index >= 8)
 	{
-		vector_get(tokens, index, t);
-		return 1;
+		vector_erase_range(tokens, 0, 6);
+		token_offset+=6;
 	}
-	return 0;
+	return 1;
 }
 
 void lex_shut()

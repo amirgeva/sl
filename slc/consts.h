@@ -17,6 +17,7 @@
 #define RBRACKET	16
 #define DOT			17
 #define EOL			18
+#define EOC			19
 
 #define BYTE		20
 #define WORD		21
@@ -30,6 +31,9 @@
 #define STRUCT		32
 #define END			33
 #define RETURN		34
+#define ELSE		35
+#define IFELSE		36
+#define BLOCK		37
 
 #define EQ			40
 #define LT			41

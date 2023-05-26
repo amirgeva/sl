@@ -1,4 +1,4 @@
-#ifdef PRINTS
+#ifdef DEV
 #include <stdio.h>
 #endif
 #include "strhash.h"
@@ -6,19 +6,22 @@
 #include "lexer.h"
 #include "parser.h"
 #include "codegen.h"
-#include "dbg.h"
+#include "dev.h"
+
+char program_filename[32];
 
 #ifdef CODE_FILE
 
-FILE* code_stream = 0;
-FILE* output_file = 0;
+static FILE* code_stream = 0;
+static FILE* output_file = 0;
+static byte  code_eof = 0;
 
 byte next_byte()
 {
+	if (code_eof) return 0;
 	if (!code_stream)
 	{
-		//code_stream = fopen("examples/tetris.sl", "r");
-		code_stream = fopen("examples/sample.sl", "r");
+		code_stream = fopen(program_filename, "r");
 		if (!code_stream)
 		{
 			fprintf(stderr, "Failed to open code file.\n");
@@ -30,6 +33,7 @@ byte next_byte()
 	{
 		fclose(code_stream);
 		code_stream = 0;
+		code_eof = 1;
 		return 0;
 	}
 	return (byte)(res & 255);
@@ -78,31 +82,58 @@ byte next_byte()
 	return *ptr++;
 }
 
-byte write_output(word offset, byte* data, word length) { return 1; }
+byte write_output(word offset, byte* data, word length) 
+{ 
+	(void)offset;
+	(void*)data;
+	(void)length;
+	return 1;
+}
+
+void close_output() {}
 
 #endif
 
-int main(/* int argc, char* argv[] */)
+int main(int argc, char* argv[])
 {
-	init_alloc();
+	if (argc > 1)
+	{
+		char* dst=program_filename;
+		const char* src=argv[1];
+		for (byte i = 0; i < 32; ++i)
+		{
+			*dst++ = *src;
+			if (*src==0) break;
+			src++;
+		}
+		//strcpy(program_filename, argv[1]);
+	}
+	else
+	{
+#ifdef DEV
+		printf("Usage: slc <source>\n");
+#endif
+		return 1;
+	}
+	dev_init();
+	alloc_init();
 	sh_init();
 	lex_init();
-	p_init(lex_size(), lex_get);
-	p_parse();
+	p_init(lex_get);
+	//p_parse();
 	gen_init();
-#ifdef PRINTS
-	//p_print();
-	print_tree(p_root());
-	//scan_sizes(p_root());
-#endif
-	generate_code(p_root(), write_output);
+	//dev_print_tree(p_root());
+	generate_code(p_parse, write_output);
 	close_output();
 	gen_shut();
 	p_shut();
 	lex_shut();
 	sh_shut();
-#ifdef PRINTS
-	printf("Total allocated left: %d", get_total_allocated());
+	dev_shut();
+	alloc_shut();
+#ifdef DEV
+	printf("Total memory leaked: %d\n", get_total_allocated());
+	printf("Maximum allocated: %d\n", get_max_allocated());
 #endif
 	return 0;
 }

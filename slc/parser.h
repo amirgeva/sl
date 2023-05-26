@@ -25,7 +25,8 @@ struct node_
 	Node*		parameters;
 };
 
-void p_init(word size, token_func f);
-byte p_parse();
+void p_init(token_func f);
+Node* p_parse();
 Node* p_root();
 void p_shut();
+void release_node(Node* node);

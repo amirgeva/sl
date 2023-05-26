@@ -1,10 +1,10 @@
-HEADERS=../codegen.h ../consts.h ../dbg.h ../lexer.h ../parser.h ../types.h ../datastr/strhash.h ../datastr/vector.h ../utils/memory.h
-RELS=codegen.rel dbg.rel lexer.rel main.rel parser.rel strhash.rel vector.rel memory.rel
+HEADERS=../codegen.h ../consts.h ../dev.h ../lexer.h ../parser.h ../types.h ../datastr/strhash.h ../datastr/vector.h ../utils/memory.h
+RELS=codegen.rel dev.rel lexer.rel main.rel parser.rel strhash.rel vector.rel memory.rel utils.rel
 slc.bin: slc.ihx
 	rm -f slc.bin
 	rm -f intermediate/*
 	echo intermediate > intermediate/README.md
-	python3 ihx2bin.py slc.ihx slc.bin
+	py ihx2bin.py slc.ihx slc.bin
 	#python bin2list.py slc.bin ../z80io/os.inl
 	mv *.asm intermediate
 	mv *.lst intermediate
@@ -18,8 +18,8 @@ slc.ihx: ${RELS} lowlevel.rel
 codegen.rel: ../codegen.c ${HEADERS}
 	sdcc -mz80 -c -I.. -I../datastr -I../utils ../codegen.c
 
-dbg.rel: ../dbg.c ${HEADERS}
-	sdcc -mz80 -c -I.. -I../datastr -I../utils ../dbg.c
+dev.rel: ../dev.c ${HEADERS}
+	sdcc -mz80 -c -I.. -I../datastr -I../utils ../dev.c
 
 lexer.rel: ../lexer.c ${HEADERS}
 	sdcc -mz80 -c -I.. -I../datastr -I../utils ../lexer.c
@@ -38,6 +38,9 @@ vector.rel: ../datastr/vector.c ${HEADERS}
 
 memory.rel: ../utils/memory.c ${HEADERS}
 	sdcc -mz80 -c -I.. -I../datastr -I../utils ../utils/memory.c
+
+utils.rel: ../utils/utils.c ${HEADERS}
+	sdcc -mz80 -c -I.. -I../datastr -I../utils ../utils/utils.c
 
 lowlevel.rel: ../lowlevel.asm
 	sdasz80 -l -o lowlevel.rel ../lowlevel.asm

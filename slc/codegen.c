@@ -3,12 +3,17 @@
 #include <vector.h>
 #include <strhash.h>
 
-#define ERROR_RET { error=1; exit(1); }
+#define ERROR_RET { error=1; error_exit(1); }
 #define ASSERT(x)
 
-#ifndef PRINTS
-void exit(int);
+#ifndef DEV
+void exit(int rc) { (void)rc; }
 #endif
+
+void error_exit(int rc)
+{
+	exit(rc);
+}
 
 typedef enum data_location_
 {
@@ -31,6 +36,18 @@ typedef struct term_
 	word			immediate;
 } Term;
 
+typedef struct field_
+{
+	BaseType	type;
+	word		name;
+} Field;
+
+typedef struct struct_
+{
+	word	name;
+	Vector* fields;
+} Struct;
+
 typedef struct variable_
 {
 	// For global variables, address is absolute
@@ -47,13 +64,14 @@ typedef struct address_
 	word		address;
 } Address;
 
-byte error=0;
-Vector* variables;
-Vector* knowns;
-Vector* unknowns;
-Node* root;
-file_write_func raw_write=0;
-word write_offset=0;
+static byte error=0;
+static Vector* structs;
+static Vector* variables;
+static Vector* knowns;
+static Vector* unknowns;
+static parse_node_func parse_node;
+static file_write_func raw_write=0;
+static word write_offset=0;
 
 word get_known_address(word name)
 {
@@ -123,6 +141,7 @@ const byte rsh_c_cmd[] = { 0xCB, 0x39 };
 #define ld_mem_hl_b write_byte(0x70)
 #define ld_mem_hl_c write_byte(0x71)
 #define inc_hl		write_byte(0x23)
+#define inc_sp		write_byte(0x33)
 void ld_a_mem_ix(byte offset) { const byte cmd[] = {0xDD, 0x7E, offset}; WRITE(cmd); }
 void ld_h_mem_ix(byte offset) { const byte cmd[] = { 0xDD, 0x66, offset }; WRITE(cmd); }
 void ld_l_mem_ix(byte offset) { const byte cmd[] = { 0xDD, 0x6E, offset }; WRITE(cmd); }
@@ -183,31 +202,33 @@ word type_size(BaseType* base_type)
 	return 0;
 }
 
-word calculate_struct_size(Node* node)
+word calculate_struct_size(Struct* s)
 {
-	Node* child = node->child;
+	word n=vector_size(s->fields);
 	word sum = 0;
-	while (child)
+	for (word i = 0; i < n; ++i)
 	{
-		sum += type_size(&child->data_type);
-		child = child->sibling;
+		Field* field = (Field*)vector_access(s->fields, i);
+		sum+=type_size(&field->type);
 	}
 	return sum;
 }
 
+Struct* find_struct(word name)
+{
+	word n = vector_size(structs);
+	for (word i = 0; i < n; ++i)
+	{
+		Struct* s = (Struct*)vector_access(structs, i);
+		if (s->name == name) return s;
+	}
+	ERROR_RET;
+	return 0;
+}
+
 word struct_size(word name)
 {
-	Node* child = root->child;
-	while (child)
-	{
-		if (child->type == STRUCT && child->name == name)
-		{
-			return calculate_struct_size(child);
-		}
-		child = child->sibling;
-	}
-	error = 1;
-	return 0;
+	return calculate_struct_size(find_struct(name));
 }
 
 // Given a struct name and field name, calculate the relative term.
@@ -216,32 +237,20 @@ void struct_field_offset(word struct_name, word field_name, Term* res)
 {
 	res->location = IMMEDIATE;
 	res->immediate = 0;
-	Node* child = root->child;
-	while (child)
+	Struct* s=find_struct(struct_name);
+	word offset = 0;
+	word n=vector_size(s->fields);
+	for (word i = 0; i < n; ++i)
 	{
-		if (child->type == STRUCT && child->name == struct_name)
+		Field* field = (Field*)vector_access(s->fields, i);
+		if (field->name == field_name)
 		{
-			child = child->child;
-			word offset = 0;
-			while (child)
-			{
-				if (child->name == field_name)
-				{
-					res->immediate = offset;
-					res->location = IMMEDIATE;
-					res->type.base_type = child->data_type;
-					res->type.local = 99; // Should be ignored
-					return;
-				}
-				offset += type_size(&child->data_type);
-				child = child->sibling;
-			}
-			ERROR_RET;
-			return;
+			res->immediate=offset;
+			res->type.base_type = field->type;
+			break;
 		}
-		child = child->sibling;
+		offset+= type_size(&field->type);
 	}
-	ERROR_RET;
 }
 
 word var_size(Node* node)
@@ -325,7 +334,7 @@ word scan_variables(Node* node, word offset, byte local)
 			sum += var_size(child);
 		}
 		else
-		if (child->type == WHILE || child->type == IF)
+		if (child->type == WHILE || child->type == IF || child->type == IFELSE || child->type==BLOCK)
 			sum += scan_variables(child, offset, 1);
 		child = child->sibling;
 	}
@@ -494,7 +503,15 @@ void get_node_address(Node* node, Term* res)
 		if (find_variable(node->name, &var))
 		{
 			res->type = var.type;
-			ld_hl_immed(var.address);
+			if (var.type.local && var.address<0x100 && 
+				(var.type.base_type.type == ARRAY || var.type.base_type.sub_type == STRUCT))
+			{
+				// variable is a local parameter pointer.  Load its actual address
+				ld_l_mem_ix(var.address);
+				ld_h_mem_ix(var.address+1);
+			}
+			else
+				ld_hl_immed(var.address);
 			push_hl;
 		}
 		else
@@ -554,8 +571,10 @@ void generate_block(Node* block);
 void generate_call(Node* node)
 {
 	Node* p=node->parameters;
+	byte param_count=0;
 	while (p)
 	{
+		++param_count;
 		Term res;
 		if (p->data_type.type == ARRAY || p->data_type.sub_type == STRUCT)
 		{
@@ -571,7 +590,7 @@ void generate_call(Node* node)
 				set_hl_immed(res.immediate);
 				break;
 			case HL: break;
-			case A:	 set_hl_a;
+			case A:	 set_hl_a; break;
 			default: ERROR_RET;
 			}
 			push_hl;
@@ -581,6 +600,9 @@ void generate_call(Node* node)
 	add_unknown_address(node->name, write_offset+1);
 	const byte cmd[] = {0xCD, 0x00, 0x00};
 	WRITE(cmd);
+	param_count<<=1; // word per param
+	for(byte i=0;i<param_count;++i)
+		inc_sp;
 }
 
 void generate_assignment(Node* node)
@@ -595,6 +617,16 @@ void generate_assignment(Node* node)
 	calculate_expression(expr_node,&source_term);
 	switch (source_term.location)
 	{
+	case IMMEDIATE:
+		set_bc_immed(source_term.immediate);
+		pop_hl;
+		ld_mem_hl_c;
+		if (target_size > 1)
+		{
+			inc_hl;
+			ld_mem_hl_b;
+		}
+		break;
 	case A:
 		pop_hl;
 		ld_mem_hl_a;
@@ -619,15 +651,64 @@ void generate_assignment(Node* node)
 	}
 }
 
+byte invert_condition(byte b)
+{
+	if (b == 0x38) return 0x30;
+	if (b == 0x30) return 0x38;
+	if (b == 0x28) return 0x20;
+	if (b == 0x20) return 0x28;
+	ERROR_RET;
+	return 0;
+}
+
+word clear_condition_flag(byte b)
+{
+	if (b == 0x38) return 0xA7;		// JR C  ->  AND A
+	if (b == 0x30) return 0x37;		// JR NC ->  SCF
+	if (b == 0x28) return 0x01F6;	// JR Z -> OR 1
+	if (b == 0x20) return 0xBF;		// JR NZ -> CP A
+	ERROR_RET;
+	return 0;
+}
+
 byte generate_condition(Node* node)
 {
-	if (node->type == PIPE || node->type == AMP)
+	if (node->type == PIPE)
 	{
-		byte b=generate_condition(node->child);
+		byte b = generate_condition(node->child);
+		word success_end = sh_temp();
+		add_unknown_address(success_end, write_offset+3);
+		const byte left_cmd[] = { invert_condition(b), 0x03, 0xC3, 0x00, 0x00 };
+		WRITE(left_cmd);
+		b = generate_condition(node->child->sibling);
+		byte right_cmd[] = { b, 0x02, 0x00, 0x00 };
+		word fail = clear_condition_flag(b);
+		right_cmd[2] = fail & 0xFF;
+		right_cmd[3] = fail >> 8;
+		WRITE(right_cmd);
+		add_known_address(success_end, write_offset);
+		return b;
+	}
+	else
+	if (node->type == AMP)
+	{
+		byte b = generate_condition(node->child);
+		word failure_end = sh_temp();
+		add_unknown_address(failure_end, write_offset + 3);
+		const byte left_cmd[] = { b, 0x03, 0xC3, 0x00, 0x00 };
+		WRITE(left_cmd);
+		b = generate_condition(node->child->sibling);
+		byte right_cmd[] = { b, 0x02, 0x00, 0x00 };
+		word fail = clear_condition_flag(b);
+		right_cmd[2] = fail & 0xFF;
+		right_cmd[3] = fail >> 8;
+		add_known_address(failure_end, write_offset + 2);
+		WRITE(right_cmd);
+		return b;
 	}
 	else
 	{
-		if (node->type==LPAREN) generate_condition(node->child);
+		if (node->type==LPAREN) return generate_condition(node->child);
 		else
 		{
 			byte swap = (node->type == GT || node->type == LE);
@@ -673,6 +754,7 @@ byte generate_condition(Node* node)
 			}
 		}
 	}
+	ERROR_RET;
 	return 0;
 }
 
@@ -694,12 +776,31 @@ void generate_cond_block(Node* node, byte loop)
 	add_known_address(end_of_block, write_offset);
 }
 
+void generate_ifelse(Node* node)
+{
+	if (!node->parameters) ERROR_RET;
+	byte jump = generate_condition(node->parameters);
+	word end_of_true = sh_temp();
+	add_unknown_address(end_of_true, write_offset + 3);
+	const byte true_cmd[] = { jump, 0x03, 0xC3, 0x00, 0x00 };
+	WRITE(true_cmd);
+	generate_block(node->child); // True side of if-else
+	word end_of_else = sh_temp();
+	add_unknown_address(end_of_else, write_offset+1);
+	const byte jump_to_end[] = { 0xC3, 0x00, 0x00 };
+	WRITE(jump_to_end);
+	add_known_address(end_of_true, write_offset);
+	generate_block(node->child->sibling);
+	add_known_address(end_of_else,write_offset);
+}
+
 void generate_statement(Node* statement)
 {
 	if (statement->type == ASSIGN) generate_assignment(statement);
 	else if (statement->type == WHILE) generate_cond_block(statement,1);
 	else if (statement->type == IF) generate_cond_block(statement,0);
 	else if (statement->type == CALL) generate_call(statement);
+	else if (statement->type == IFELSE) generate_ifelse(statement);
 }
 
 void generate_block(Node* block)
@@ -736,23 +837,6 @@ void generate_function(Node* func, word locals_size)
 	WRITE(close_stack);
 }
 
-#ifdef PRINTS
-#include <stdio.h>
-void scan_sizes(Node* root)
-{
-	printf("ROOT ");
-	printf(" %hd\n", local_var_size(root));
-	Node* node = root->child;
-	while (node)
-	{
-		//word size = local_var_size(node, 0);
-		print_name(node->name);
-		printf(" %hd\n",local_var_size(node));
-		node = node->sibling;
-	}
-}
-#endif
-
 void generate_common_functions()
 {
 	Address address;
@@ -762,6 +846,11 @@ void generate_common_functions()
 	const byte mult_code[] = {	0x21,0x00,0x00,0x78,0x06,0x10,0x29,0xCB,
 								0x21,0x17,0x30,0x01,0x19,0x10,0xF7,0xC9 };
 	WRITE(mult_code);
+	address.name=sh_get("gpu_block");
+	address.address = write_offset;
+	vector_push(knowns, &address);
+	const byte gpu_code[] = { 0xC1, 0xE1, 0xE5, 0xC5, 0x3E, 0x08, 0xCF, 0xC9 };
+	WRITE(gpu_code);
 }
 
 void fill_unknowns()
@@ -775,30 +864,84 @@ void fill_unknowns()
 	}
 }
 
-byte generate_code(Node* proot, file_write_func fwf)
+void add_variable(Node* node)
 {
-	root = proot;
+	Variable var;
+	var.type.local = 0;
+	var.name = node->name;
+	var.address = write_offset;
+	var.size = var_size(node);
+	var.type.base_type = node->data_type;
+	vector_push(variables, &var);
+	for(word i=0;i<var.size;++i)
+		write_byte(0);
+}
+
+void add_struct(Node* node)
+{
+	Struct s;
+	s.name= node->name;
+	s.fields = vector_new(sizeof(Field));
+	Node* child=node->child;
+	Field field;
+	while (child)
+	{
+		field.name = child->name;
+		field.type = child->data_type;
+		vector_push(s.fields, &field);
+	}
+	vector_push(structs, &s);
+}
+
+void add_function(Node* node)
+{
+	if (!node->child) // extern
+		return;
+	word globals_size = vector_size(variables);
+	scan_parameters(node);
+	word locals_size = scan_variables(node, 0, 1);
+	generate_function(node, locals_size);
+	vector_resize(variables, globals_size); // Remove local vars
+}
+
+byte generate_code(parse_node_func parse_node_, file_write_func fwf)
+{
+	parse_node = parse_node_;
 	raw_write = fwf;
-	word globals_size = scan_variables(root, 0, 0);
-	word globals_count = vector_size(variables);
+
 	byte header[] = { 0xC3, 0x00, 0x00 };
 	WRITE(header);
 	add_unknown_address(sh_get("main"), 1);
-	for (word i = 0; i < globals_size; ++i)		// Reserve room for globals
-		write_byte(0);
 	generate_common_functions();
-	Node* child = root->child;
-	while (child)
+	while (1)
 	{
-		if (child->type == FUN && child->child) // Not an extern
+		Node* node = parse_node();
+		if (!node) break;
+		switch (node->type)
 		{
-			scan_parameters(child);
-			word locals_size = scan_variables(child, 0, 1);
-			generate_function(child, locals_size);
-			vector_resize(variables, globals_count); // Remove local vars
+		case VAR:		add_variable(node); break;
+		case STRUCT:	add_struct(node);	break;
+		case FUN:		add_function(node);	break;
+		default: ERROR_RET;
 		}
-		child = child->sibling;
+		release_node(node);
 	}
+	//word globals_size = scan_variables(root, 0, 0);
+	//word globals_count = vector_size(variables);
+	//for (word i = 0; i < globals_size; ++i)		// Reserve room for globals
+	//	write_byte(0);
+	//Node* child = root->child;
+	//while (child)
+	//{
+	//	if (child->type == FUN && child->child) // Not an extern
+	//	{
+	//		scan_parameters(child);
+	//		word locals_size = scan_variables(child, 0, 1);
+	//		generate_function(child, locals_size);
+	//		vector_resize(variables, globals_count); // Remove local vars
+	//	}
+	//	child = child->sibling;
+	//}
 	fill_unknowns();
 	return 1;
 }
@@ -806,6 +949,7 @@ byte generate_code(Node* proot, file_write_func fwf)
 void gen_init()
 {
 	write_offset = 0;
+	structs = vector_new(sizeof(Struct));
 	variables = vector_new(sizeof(Variable));
 	knowns = vector_new(sizeof(Address));
 	unknowns = vector_new(sizeof(Address));
@@ -816,5 +960,12 @@ void gen_shut()
 	vector_shut(unknowns);
 	vector_shut(knowns);
 	vector_shut(variables);
+	word n=vector_size(structs);
+	for (word i = 0; i < n; ++i)
+	{
+		Struct* s=vector_access(structs,i);
+		vector_shut(s->fields);
+	}
+	vector_shut(structs);
 }
 

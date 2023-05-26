@@ -10,6 +10,6 @@ typedef struct token
 } Token;
 
 void lex_init();
-word lex_size();
+//word lex_size();
 byte lex_get(word index, Token* t);
 void lex_shut();
