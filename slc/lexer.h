@@ -7,6 +7,7 @@ typedef struct token
 {
 	byte type;
 	word value;
+	word line;
 } Token;
 
 void lex_init();

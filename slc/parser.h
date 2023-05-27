@@ -19,6 +19,7 @@ struct node_
 	byte		type;
 	BaseType	data_type;
 	word		name;
+	word		line;
 	Node*		parent;
 	Node*		sibling;
 	Node*		child;

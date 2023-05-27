@@ -3,15 +3,18 @@
 #include <vector.h>
 #include <strhash.h>
 
-#define ERROR_RET { error=1; error_exit(1); }
+#define ERROR_RET(line) { error=1; error_exit(line,1); }
 #define ASSERT(x)
 
 #ifndef DEV
 void exit(int rc) { (void)rc; }
 #endif
 
-void error_exit(int rc)
+void error_exit(word line, int rc)
 {
+#ifdef DEV
+	printf("Error in line %d\n",line);
+#endif
 	exit(rc);
 }
 
@@ -73,7 +76,7 @@ static parse_node_func parse_node;
 static file_write_func raw_write=0;
 static word write_offset=0;
 
-word get_known_address(word name)
+word get_known_address(word line, word name)
 {
 	word i=0,n=vector_size(knowns);
 	for (; i < n; ++i)
@@ -82,7 +85,7 @@ word get_known_address(word name)
 		if (a->name==name)
 			return a->address + 0x1000; // Add OS size offset
 	}
-	ERROR_RET;
+	ERROR_RET(line);
 	return 0;
 }
 
@@ -184,11 +187,11 @@ byte is_binary_operator(byte type)
 }
 
 void print_name(word id);
-word struct_size(word name);
+word struct_size(word line, word name);
 
-word type_size(BaseType* base_type)
+word type_size(word line, BaseType* base_type)
 {
-	if (base_type->sub_type == STRUCT) return struct_size(base_type->type_name);
+	if (base_type->sub_type == STRUCT) return struct_size(line, base_type->type_name);
 	ASSERT(base_type->sub_type == PRIMITIVE);
 	switch (base_type->type_name)
 	{
@@ -197,24 +200,24 @@ word type_size(BaseType* base_type)
 	case SWORD:
 	case WORD: return 2;
 	default:
-		ERROR_RET;
+		ERROR_RET(line);
 	}
 	return 0;
 }
 
-word calculate_struct_size(Struct* s)
+word calculate_struct_size(word line, Struct* s)
 {
 	word n=vector_size(s->fields);
 	word sum = 0;
 	for (word i = 0; i < n; ++i)
 	{
 		Field* field = (Field*)vector_access(s->fields, i);
-		sum+=type_size(&field->type);
+		sum+=type_size(line, &field->type);
 	}
 	return sum;
 }
 
-Struct* find_struct(word name)
+Struct* find_struct(word line, word name)
 {
 	word n = vector_size(structs);
 	for (word i = 0; i < n; ++i)
@@ -222,22 +225,22 @@ Struct* find_struct(word name)
 		Struct* s = (Struct*)vector_access(structs, i);
 		if (s->name == name) return s;
 	}
-	ERROR_RET;
+	ERROR_RET(line);
 	return 0;
 }
 
-word struct_size(word name)
+word struct_size(word line, word name)
 {
-	return calculate_struct_size(find_struct(name));
+	return calculate_struct_size(line, find_struct(line, name));
 }
 
 // Given a struct name and field name, calculate the relative term.
 // If successful, returns an immediate term relative to the start of the struct
-void struct_field_offset(word struct_name, word field_name, Term* res)
+void struct_field_offset(word line, word struct_name, word field_name, Term* res)
 {
 	res->location = IMMEDIATE;
 	res->immediate = 0;
-	Struct* s=find_struct(struct_name);
+	Struct* s=find_struct(line, struct_name);
 	word offset = 0;
 	word n=vector_size(s->fields);
 	for (word i = 0; i < n; ++i)
@@ -249,20 +252,20 @@ void struct_field_offset(word struct_name, word field_name, Term* res)
 			res->type.base_type = field->type;
 			break;
 		}
-		offset+= type_size(&field->type);
+		offset+= type_size(line, &field->type);
 	}
 }
 
 word var_size(Node* node)
 {
 	if (node->data_type.type == VAR)
-		return type_size(&node->data_type);
+		return type_size(node->line, &node->data_type);
 	else
 	if (node->data_type.type == ARRAY && node->parameters)
 	{
-		return node->parameters->name * type_size(&node->data_type);
+		return node->parameters->name * type_size(node->line, &node->data_type);
 	}
-	else ERROR_RET;
+	else ERROR_RET(node->line);
 	return 0;
 }
 
@@ -375,7 +378,7 @@ void calculate_expression(Node* node, Term* res)
 		if (find_variable(node->name, &var))
 		{
 			res->type = var.type;
-			word size=type_size(&var.type.base_type);
+			word size=type_size(node->line, &var.type.base_type);
 			if (var.type.local)
 			{
 				if (size == 1)
@@ -409,7 +412,7 @@ void calculate_expression(Node* node, Term* res)
 	{
 		get_node_address(node, res);
 		pop_hl;
-		word size = type_size(&res->type.base_type);
+		word size = type_size(node->line, &res->type.base_type);
 		if (size == 1)
 		{
 			ld_a_mem_hl;
@@ -423,11 +426,11 @@ void calculate_expression(Node* node, Term* res)
 			res->location = HL;
 			res->type.local = 0;
 		}
-		else ERROR_RET;
+		else ERROR_RET(node->line);
 	}
 	else if (is_binary_operator(node->type))
 	{
-		if (!node->child || !node->child->sibling) ERROR_RET;
+		if (!node->child || !node->child->sibling) ERROR_RET(node->line);
 		Term left,right;
 		calculate_expression(node->child,&left);
 		switch (left.location)
@@ -435,14 +438,14 @@ void calculate_expression(Node* node, Term* res)
 		case A:		push_af; pop_bc; set_b_immed(0); break;
 		case HL:	push_hl; pop_bc; break;
 		case IMMEDIATE: set_bc_immed(left.immediate); break;
-		default: ERROR_RET;
+		default: ERROR_RET(node->line);
 		}
 		calculate_expression(node->child->sibling,&right);
 		word left_size = 1, right_size = 1;
 		if (left.location!=IMMEDIATE) 
-			left_size = type_size(&left.type.base_type);
+			left_size = type_size(node->line, &left.type.base_type);
 		if (right.location != IMMEDIATE)
-			right_size = type_size(&right.type.base_type);
+			right_size = type_size(node->line, &right.type.base_type);
 		word max_size = (left_size > 1 || right_size > 1) ? 2 : 1;
 		switch (right.location)
 		{
@@ -450,7 +453,7 @@ void calculate_expression(Node* node, Term* res)
 		case HL: break;
 		case IMMEDIATE: ld_hl_immed(right.immediate); break;
 		default:
-			ERROR_RET;
+			ERROR_RET(node->line);
 		}
 		if (max_size > 1)
 		{
@@ -458,7 +461,7 @@ void calculate_expression(Node* node, Term* res)
 			{
 			case PLUS: add_hl_bc; res->location = HL; set_prim_type(&res->type.base_type, WORD); break;
 			case MINUS: sub_hl_bc; res->location = HL; set_prim_type(&res->type.base_type, WORD); break;
-			default: ERROR_RET;
+			default: ERROR_RET(node->line);
 			}
 		}
 		else
@@ -472,20 +475,20 @@ void calculate_expression(Node* node, Term* res)
 			case AMP: and_c; break;
 			case PIPE: or_c; break;
 			case CARET: xor_c; break;
-			default: ERROR_RET;
+			default: ERROR_RET(node->line);
 			}
 			res->location = A;
 			set_prim_type(&res->type.base_type, BYTE);
 		}
 	}
-	else ERROR_RET;
+	else ERROR_RET(node->line);
 }
 
-void multiply_hl(word m)
+void multiply_hl(word line, word m)
 {
 	set_bc_hl;
 	set_de_immed(m);
-	word addr = get_known_address(sh_get("mult_bc_de"));
+	word addr = get_known_address(line, sh_get("mult_bc_de"));
 	const byte cmd[] = { 0xCD, (addr&0xFF), (addr>>8)};
 	WRITE(cmd);
 }
@@ -515,14 +518,14 @@ void get_node_address(Node* node, Term* res)
 			push_hl;
 		}
 		else
-		ERROR_RET;
+		ERROR_RET(node->line);
 	}
 	else if (node->type == INDEX)
 	{
 		Term array_address;
 		get_node_address(node->child,&array_address);
-		if (array_address.type.base_type.type != ARRAY) ERROR_RET;
-		word elem_size = type_size(&array_address.type.base_type);
+		if (array_address.type.base_type.type != ARRAY) ERROR_RET(node->line);
+		word elem_size = type_size(node->line, &array_address.type.base_type);
 		Term index;
 		calculate_expression(node->child->sibling,&index);
 		if (index.location == IMMEDIATE)
@@ -536,9 +539,9 @@ void get_node_address(Node* node, Term* res)
 			case A:				set_hl_a; break;
 			case HL:			break;
 			case STACK:
-			default:	ERROR_RET;
+			default:	ERROR_RET(node->line);
 			}
-			multiply_hl(elem_size);
+			multiply_hl(node->line, elem_size);
 		}
 		pop_bc; // Get the array address from the stack
 		add_hl_bc; // Add the index
@@ -550,11 +553,11 @@ void get_node_address(Node* node, Term* res)
 	{
 		Term struct_addr;
 		get_node_address(node->child,&struct_addr);
-		if (struct_addr.type.base_type.sub_type != STRUCT) ERROR_RET;
+		if (struct_addr.type.base_type.sub_type != STRUCT) ERROR_RET(node->line);
 		Node* field_node = node->child->sibling;
 		Term field;
-		struct_field_offset(struct_addr.type.base_type.type_name, field_node->name, &field);
-		if (field.location != IMMEDIATE) ERROR_RET;
+		struct_field_offset(node->line, struct_addr.type.base_type.type_name, field_node->name, &field);
+		if (field.location != IMMEDIATE) ERROR_RET(node->line);
 		res->type.local = 0;
 		res->type.base_type = field.type.base_type;
 		pop_bc; // struct base address
@@ -562,7 +565,7 @@ void get_node_address(Node* node, Term* res)
 		add_hl_bc; // base+offset
 		push_hl;
 	}
-	else ERROR_RET;
+	else ERROR_RET(node->line);
 }
 
 void generate_statement(Node* statement);
@@ -579,7 +582,7 @@ void generate_call(Node* node)
 		if (p->data_type.type == ARRAY || p->data_type.sub_type == STRUCT)
 		{
 			get_node_address(p,&res);
-			if (res.location!=STACK) ERROR_RET;
+			if (res.location!=STACK) ERROR_RET(node->line);
 		}
 		else
 		{
@@ -591,7 +594,7 @@ void generate_call(Node* node)
 				break;
 			case HL: break;
 			case A:	 set_hl_a; break;
-			default: ERROR_RET;
+			default: ERROR_RET(node->line);
 			}
 			push_hl;
 		}
@@ -610,7 +613,7 @@ void generate_assignment(Node* node)
 	Node* target_node = node->child;
 	Term target_term;
 	get_node_address(target_node,&target_term);
-	word target_size = type_size(&target_term.type.base_type);
+	word target_size = type_size(node->line, &target_term.type.base_type);
 	Node* expr_node = target_node->sibling;
 	
 	Term source_term;
@@ -647,7 +650,7 @@ void generate_assignment(Node* node)
 			ld_mem_hl_b;
 		}
 		break;
-	default: ERROR_RET;
+	default: ERROR_RET(node->line);
 	}
 }
 
@@ -657,7 +660,7 @@ byte invert_condition(byte b)
 	if (b == 0x30) return 0x38;
 	if (b == 0x28) return 0x20;
 	if (b == 0x20) return 0x28;
-	ERROR_RET;
+	ERROR_RET(0xFFFF);
 	return 0;
 }
 
@@ -667,7 +670,7 @@ word clear_condition_flag(byte b)
 	if (b == 0x30) return 0x37;		// JR NC ->  SCF
 	if (b == 0x28) return 0x01F6;	// JR Z -> OR 1
 	if (b == 0x20) return 0xBF;		// JR NZ -> CP A
-	ERROR_RET;
+	ERROR_RET(0xFFFF);
 	return 0;
 }
 
@@ -723,22 +726,22 @@ byte generate_condition(Node* node)
 				case A: push_af; break;
 				case HL: set_h_immed(0); push_hl; break;
 				default:
-					ERROR_RET;
+					ERROR_RET(node->line);
 				}
 				calculate_expression(node->child->sibling, &right);
 				switch (right.location)
 				{
-				case IMMEDIATE: 
+				case IMMEDIATE:
 					if (swap) set_a_immed(right.immediate);
 					else set_hl_immed(right.immediate); 
 					break;
 				case A: if (!swap) set_l_a; break;
 				case HL: if (swap) set_a_l; break;
 				default:
-					ERROR_RET;
+					ERROR_RET(node->line);
 				}
 			}
-			else ERROR_RET;
+			else ERROR_RET(node->line);
 			if (swap) pop_hl;
 			else pop_af;
 			write_byte(0xBD); // CP L
@@ -750,17 +753,17 @@ byte generate_condition(Node* node)
 			case GE: return 0x30; // JR NC
 			case EQ: return 0x28; // JR Z
 			case NE: return 0x20; // JR NZ
-			default: ERROR_RET;
+			default: ERROR_RET(node->line);
 			}
 		}
 	}
-	ERROR_RET;
+	ERROR_RET(node->line);
 	return 0;
 }
 
 void generate_cond_block(Node* node, byte loop)
 {
-	if (!node->parameters) ERROR_RET;
+	if (!node->parameters) ERROR_RET(node->line);
 	word start_addr = write_offset+0x1000;
 	byte jump = generate_condition(node->parameters);
 	word end_of_block = sh_temp();
@@ -778,7 +781,7 @@ void generate_cond_block(Node* node, byte loop)
 
 void generate_ifelse(Node* node)
 {
-	if (!node->parameters) ERROR_RET;
+	if (!node->parameters) ERROR_RET(node->line);
 	byte jump = generate_condition(node->parameters);
 	word end_of_true = sh_temp();
 	add_unknown_address(end_of_true, write_offset + 3);
@@ -859,7 +862,7 @@ void fill_unknowns()
 	for (; i < n; ++i)
 	{
 		Address* unk=(Address*)vector_access(unknowns,i);
-		word addr=get_known_address(unk->name);
+		word addr=get_known_address(0xFFFF,unk->name);
 		raw_write(unk->address,(byte*)&addr,2);
 	}
 }
@@ -922,7 +925,7 @@ byte generate_code(parse_node_func parse_node_, file_write_func fwf)
 		case VAR:		add_variable(node); break;
 		case STRUCT:	add_struct(node);	break;
 		case FUN:		add_function(node);	break;
-		default: ERROR_RET;
+		default: ERROR_RET(node->line);
 		}
 		release_node(node);
 	}

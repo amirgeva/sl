@@ -14,6 +14,7 @@ static byte buffer[BUF_SIZE];
 static byte bpos = 0;
 static byte last_char = 0;
 static byte error = 0;
+static byte next_line = 0;
 static word line = 0;
 static word token_offset = 0;
 static Vector* tokens;
@@ -121,7 +122,7 @@ word lex_line()
 	return line;
 }
 
-#define ADD(x) { t.type=x; vector_push(tokens, &t); continue; }
+#define ADD(x) { t.type=x; t.line=line; vector_push(tokens, &t); continue; }
 
 
 static void analyze()
@@ -129,6 +130,11 @@ static void analyze()
 	byte b;
 	while (vector_size(tokens)<12)
 	{
+		if (next_line)
+		{
+			++line;
+			next_line = 0;
+		}
 		if (error) return;
 		if (last_char == 0)
 			b = next_byte();
@@ -137,7 +143,10 @@ static void analyze()
 			b = last_char;
 			last_char = 0;
 		}
-		if (!b) return;
+		if (!b)
+		{
+			return;
+		}
 		Token t;
 		t.value = b;
 		if (state == OPER)
@@ -199,7 +208,7 @@ static void analyze()
 			case '&': ADD(AMP);
 			case '|': ADD(PIPE);
 			case '^': ADD(CARET);
-			case '\n': ADD(EOL);
+			case '\n': next_line=1; ADD(EOL);
 			case '<':
 			case '>':
 			case '!':
@@ -221,10 +230,6 @@ static void analyze()
 			{
 				error = 1;
 				return;
-			}
-			else
-			{
-				if (b == 10) line++;
 			}
 		}
 		else
@@ -277,10 +282,10 @@ byte lex_get(word index, Token* t)
 	index-=token_offset;
 	if (index>=10) return 0; // Cannot look ahead too far
 	if (index>=vector_size(tokens)) analyze();
-	vector_get(tokens, index, t);
+	if (!vector_get(tokens, index, t)) return 0;
 	if (index >= 8)
 	{
-		vector_erase_range(tokens, 0, 6);
+		vector_erase_range(tokens, 0, 6); // allow short look back
 		token_offset+=6;
 	}
 	return 1;

@@ -7,7 +7,7 @@
 
 
 #define VERIFY(x,y) if (x!=y) ERROR_RET;
-#define NEXT_TOKEN if (!get_token(cur_index++, &t)) ERROR_RET
+#define NEXT_TOKEN { if (!get_token(cur_index++, &t)) ERROR_RET; else line_number=t.line; }
 #define EXPECT(x) { NEXT_TOKEN; if (t.type != x) ERROR_RET; }
 
 typedef struct constant_
@@ -60,6 +60,7 @@ Node* allocate_node(byte type, Node* parent)
 	Node* new_node = (Node*)allocate(sizeof(Node));
 	init_node(new_node, parent);
 	new_node->type = type;
+	new_node->line=line_number;
 	return new_node;
 }
 
@@ -75,7 +76,7 @@ void release_node(Node* node)
 
 Node* error_func(Node* node)
 {
-	error=1;
+	error_exit(line_number,1);
 	if (node) release_node(node);
 	return 0;
 }
@@ -100,7 +101,6 @@ byte get_token(word index, Token* t)
 			}
 		}
 	}
-	if (t->type == EOL) ++line_number;
 	return 1;
 }
 
@@ -471,6 +471,7 @@ Node* parse_fun()
 			EXPECT(EOL);
 			return node;
 		}
+		if (t.type==EOL) ERROR_RET;
 		if (param_count > 0)
 		{
 			if (t.type != COMMA) ERROR_RET;
@@ -550,6 +551,7 @@ Node* parse_struct_var()
 Node* parse_global()
 {
 	Token t;
+	t.type = EOC;
 	Node* node = 0;
 	NEXT_TOKEN;
 	if (t.type == EOC) return 0;
