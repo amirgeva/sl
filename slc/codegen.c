@@ -8,6 +8,9 @@
 
 #ifndef DEV
 void exit(int rc) { (void)rc; }
+#else
+#include <stdio.h>
+#include <stdlib.h>
 #endif
 
 void error_exit(word line, int rc)
@@ -43,6 +46,7 @@ typedef struct field_
 {
 	BaseType	type;
 	word		name;
+	word		length;
 } Field;
 
 typedef struct struct_
@@ -75,6 +79,22 @@ static Vector* unknowns;
 static parse_node_func parse_node;
 static file_write_func raw_write=0;
 static word write_offset=0;
+
+#ifdef DEV
+#include <stdio.h>
+FILE* line_offsets_file = 0;
+void close_line_offsets()
+{
+	fclose(line_offsets_file);
+}
+void write_offset_line(word line)
+{
+	if (!line_offsets_file)
+		line_offsets_file = fopen("line_offsets.log", "w");
+	fprintf(line_offsets_file,"%hd %hd\n",line,0x1000+write_offset);
+}
+#endif
+
 
 word get_known_address(word line, word name)
 {
@@ -129,14 +149,22 @@ const byte lsh_c_cmd[] = { 0xCB, 0x21 };
 #define lsh_c MULTI_BYTE_CMD(lsh_c)
 const byte rsh_c_cmd[] = { 0xCB, 0x39 };
 #define rsh_c MULTI_BYTE_CMD(rsh_c)
+const byte lsh_hl_cmd[] = { 0xCB, 0x25, 0xCB, 0x14 };
+#define lsh_hl MULTI_BYTE_CMD(lsh_hl)
 
 #define push_af		write_byte(0xF5)
-#define pop_af		write_byte(0xF1)
 #define push_hl		write_byte(0xE5)
+const byte push_ix_cmd[] = { 0xDD,0xE5 };
+#define push_ix		WRITE(push_ix_cmd)
+#define pop_af		write_byte(0xF1)
 #define pop_hl		write_byte(0xE1)
 #define pop_bc		write_byte(0xC1)
+#define pop_de		write_byte(0xD1)
+
 #define ld_a_mem_hl	write_byte(0x7E)
 #define add_hl_bc	write_byte(0x09)
+#define add_hl_de	write_byte(0x19)
+#define cp_c		write_byte(0xB9)
 
 #define ld_mem_hl_a	write_byte(0x77)
 #define sub_a		write_byte(0x97)
@@ -161,7 +189,10 @@ const byte set_hl_bc_cmd[] = { 0xC5, 0xE1 }; // PUSH BC    POP HL
 const byte set_hl_a_cmd[] = { 0x6F, 0x26, 0x00 }; // LD L,A    LD H,#0
 #define set_hl_a MULTI_BYTE_CMD(set_hl_a)
 
+#define set_b_c write_byte(0x41)
+#define set_c_a write_byte(0x4F)
 #define set_l_a write_byte(0x6F)
+#define set_h_a write_byte(0x67)
 #define set_a_l write_byte(0x7D)
 void set_a_immed(byte b) { byte cmd[] = { 0x3E, b }; WRITE(cmd); }
 void set_h_immed(byte b) { byte cmd[] = { 0x26, b }; WRITE(cmd); }
@@ -169,6 +200,12 @@ void set_b_immed(byte b) { byte cmd[] = { 0x06, b }; WRITE(cmd); }
 void set_bc_immed(word w) { byte cmd[] = { 0x01, (w & 0xFF), (w >> 8) }; WRITE(cmd); }
 void set_de_immed(word w) { byte cmd[] = { 0x11, (w & 0xFF), (w >> 8) }; WRITE(cmd); }
 void set_hl_immed(word w) { byte cmd[] = { 0x21, (w & 0xFF), (w >> 8) }; WRITE(cmd); }
+
+
+void generate_statement(Node* statement);
+void generate_block(Node* block);
+void generate_call(Node* node);
+
 
 byte is_binary_operator(byte type)
 {
@@ -212,7 +249,7 @@ word calculate_struct_size(word line, Struct* s)
 	for (word i = 0; i < n; ++i)
 	{
 		Field* field = (Field*)vector_access(s->fields, i);
-		sum+=type_size(line, &field->type);
+		sum+=field->length * type_size(line, &field->type);
 	}
 	return sum;
 }
@@ -252,7 +289,7 @@ void struct_field_offset(word line, word struct_name, word field_name, Term* res
 			res->type.base_type = field->type;
 			break;
 		}
-		offset+= type_size(line, &field->type);
+		offset += field->length * type_size(line, &field->type);
 	}
 }
 
@@ -292,7 +329,7 @@ void scan_parameters(Node* fun)
 	if (!fun) return;
 	Variable var;
 	Node* param = fun->parameters;
-	word offset = 0;
+	word offset = 2;
 	while (param)
 	{
 		offset += 2;
@@ -344,6 +381,24 @@ word scan_variables(Node* node, word offset, byte local)
 	return sum;
 }
 
+// Generate   a=a<<c
+void generate_shift_a_c(byte opcode)
+{
+	/*
+	* generate code as:
+	*   b=a					<--- Save 'A' not to be lost in comparison
+	*	if c==0 return
+	*   a=b
+	*			b=c
+	* loop:		a<<=1   (or right shift depending on opcode)
+	*			b=b-1
+	*			if b!=0 goto loop
+	*/
+	//                   b=a   a-=a  a-c   a=b   <jz to end> b=c     shift a     jnz loop
+	const byte cmd[] = { 0x47, 0x97, 0xB9, 0x78, 0x28, 0x05, 0x41, 0xCB, opcode, 0x10, 0xFC };
+	WRITE(cmd);
+}
+
 byte find_variable(word name, Variable* var)
 {
 	word n = vector_size(variables);
@@ -378,35 +433,51 @@ void calculate_expression(Node* node, Term* res)
 		if (find_variable(node->name, &var))
 		{
 			res->type = var.type;
-			word size=type_size(node->line, &var.type.base_type);
-			if (var.type.local)
+			if (var.type.base_type.type == ARRAY || var.type.base_type.sub_type == STRUCT)
 			{
-				if (size == 1)
+				ld_hl_immed(var.address);
+				if (var.type.local)
 				{
-					ld_a_mem_ix(var.address);
-					res->location=A;
+					push_ix;
+					pop_bc;
+					add_hl_bc;
 				}
-				else
-				{
-					ld_l_mem_ix(var.address);
-					ld_h_mem_ix(var.address+1);
-					res->location = HL;
-				}
+				push_hl;
+				res->location = STACK;
 			}
 			else
 			{
-				if (size == 1)
+				word size = type_size(node->line, &var.type.base_type);
+				if (var.type.local)
 				{
-					ld_a_mem_immed(var.address);
-					res->location=A;
+					if (size == 1)
+					{
+						ld_a_mem_ix(var.address);
+						res->location = A;
+					}
+					else
+					{
+						ld_l_mem_ix(var.address);
+						ld_h_mem_ix(var.address + 1);
+						res->location = HL;
+					}
 				}
 				else
 				{
-					ld_hl_mem_immed(var.address);
-					res->location=HL;
+					if (size == 1)
+					{
+						ld_a_mem_immed(var.address);
+						res->location = A;
+					}
+					else
+					{
+						ld_hl_mem_immed(var.address);
+						res->location = HL;
+					}
 				}
 			}
 		}
+		else ERROR_RET(node->line);
 	}
 	else if (node->type == DOT || node->type == INDEX)
 	{
@@ -433,11 +504,12 @@ void calculate_expression(Node* node, Term* res)
 		if (!node->child || !node->child->sibling) ERROR_RET(node->line);
 		Term left,right;
 		calculate_expression(node->child,&left);
+		// Place the left value on the stack
 		switch (left.location)
 		{
-		case A:		push_af; pop_bc; set_b_immed(0); break;
-		case HL:	push_hl; pop_bc; break;
-		case IMMEDIATE: set_bc_immed(left.immediate); break;
+		case A:		push_af; break;
+		case IMMEDIATE: set_hl_immed(left.immediate);
+		case HL:	push_hl; break;
 		default: ERROR_RET(node->line);
 		}
 		calculate_expression(node->child->sibling,&right);
@@ -449,14 +521,29 @@ void calculate_expression(Node* node, Term* res)
 		word max_size = (left_size > 1 || right_size > 1) ? 2 : 1;
 		switch (right.location)
 		{
-		case A:  if (max_size > 1) { push_af; pop_hl; set_h_immed(0); } break;
-		case HL: break;
-		case IMMEDIATE: ld_hl_immed(right.immediate); break;
+		case A:  
+		{
+			if (max_size > 1)
+			{
+				push_af;
+				pop_bc;
+				set_b_immed(0);
+			}
+			else
+			{
+				set_c_a;
+				set_b_immed(0);
+			}
+			break;
+		}
+		case HL: set_bc_hl; break;
+		case IMMEDIATE: set_bc_immed(right.immediate); break;
 		default:
 			ERROR_RET(node->line);
 		}
 		if (max_size > 1)
 		{
+			pop_hl;
 			switch (node->type)
 			{
 			case PLUS: add_hl_bc; res->location = HL; set_prim_type(&res->type.base_type, WORD); break;
@@ -466,12 +553,13 @@ void calculate_expression(Node* node, Term* res)
 		}
 		else
 		{
+			pop_af;
 			switch (node->type)
 			{
 			case PLUS: add_c; break;
 			case MINUS: sub_c; break;
-			case LSH: lsh_c; break;
-			case RSH: rsh_c; break;
+			case LSH: generate_shift_a_c(0x27); break;
+			case RSH: generate_shift_a_c(0x3F); break;
 			case AMP: and_c; break;
 			case PIPE: or_c; break;
 			case CARET: xor_c; break;
@@ -481,16 +569,46 @@ void calculate_expression(Node* node, Term* res)
 			set_prim_type(&res->type.base_type, BYTE);
 		}
 	}
+	else if (node->type == CALL)
+	{
+		generate_call(node);
+		res->location = A;
+		res->immediate = 0;
+		res->type.local = 0;
+		res->type.base_type.type=VAR;
+		res->type.base_type.sub_type=PRIMITIVE;
+		res->type.base_type.type_name=BYTE;
+	}
 	else ERROR_RET(node->line);
+}
+
+void shift_left_hl(byte bits)
+{
+	for (byte b = 0; b < bits; ++b)
+		lsh_hl;
 }
 
 void multiply_hl(word line, word m)
 {
-	set_bc_hl;
-	set_de_immed(m);
-	word addr = get_known_address(line, sh_get("mult_bc_de"));
-	const byte cmd[] = { 0xCD, (addr&0xFF), (addr>>8)};
-	WRITE(cmd);
+#define SHIFT_CASE(x) case (1<<x): shift_left_hl(x); break
+	switch (m)
+	{
+		SHIFT_CASE(1);
+		SHIFT_CASE(2);
+		SHIFT_CASE(3);
+		SHIFT_CASE(4);
+		SHIFT_CASE(5);
+		SHIFT_CASE(6);
+		SHIFT_CASE(7);
+		SHIFT_CASE(8);
+	default:
+		set_bc_hl;
+		set_de_immed(m);
+		word addr = get_known_address(line, sh_get("mult_bc_de"));
+		const byte cmd[] = { 0xCD, (addr & 0xFF), (addr >> 8) };
+		WRITE(cmd);
+	}
+#undef SHIFT_CASE
 }
 
 // Input:  node of address to evaluate
@@ -512,6 +630,7 @@ void get_node_address(Node* node, Term* res)
 				// variable is a local parameter pointer.  Load its actual address
 				ld_l_mem_ix(var.address);
 				ld_h_mem_ix(var.address+1);
+				res->type.local=0;
 			}
 			else
 				ld_hl_immed(var.address);
@@ -541,10 +660,17 @@ void get_node_address(Node* node, Term* res)
 			case STACK:
 			default:	ERROR_RET(node->line);
 			}
-			multiply_hl(node->line, elem_size);
+			if (elem_size>1)
+				multiply_hl(node->line, elem_size);
 		}
 		pop_bc; // Get the array address from the stack
 		add_hl_bc; // Add the index
+		if (array_address.type.local)
+		{
+			push_ix;
+			pop_bc;
+			add_hl_bc;
+		}
 		push_hl;
 		res->type.base_type = array_address.type.base_type;
 		res->type.local = 0; // No optimization yet.  TBD
@@ -558,7 +684,7 @@ void get_node_address(Node* node, Term* res)
 		Term field;
 		struct_field_offset(node->line, struct_addr.type.base_type.type_name, field_node->name, &field);
 		if (field.location != IMMEDIATE) ERROR_RET(node->line);
-		res->type.local = 0;
+		res->type.local = struct_addr.type.local;
 		res->type.base_type = field.type.base_type;
 		pop_bc; // struct base address
 		ld_hl_immed(field.immediate); // offset
@@ -567,9 +693,6 @@ void get_node_address(Node* node, Term* res)
 	}
 	else ERROR_RET(node->line);
 }
-
-void generate_statement(Node* statement);
-void generate_block(Node* block);
 
 void generate_call(Node* node)
 {
@@ -594,6 +717,7 @@ void generate_call(Node* node)
 				break;
 			case HL: break;
 			case A:	 set_hl_a; break;
+			case STACK: pop_hl; break;
 			default: ERROR_RET(node->line);
 			}
 			push_hl;
@@ -606,6 +730,17 @@ void generate_call(Node* node)
 	param_count<<=1; // word per param
 	for(byte i=0;i<param_count;++i)
 		inc_sp;
+}
+
+void load_hl_stack_address(byte local)
+{
+	pop_hl;
+	if (local)
+	{
+		push_ix;
+		pop_de;
+		add_hl_de;
+	}
 }
 
 void generate_assignment(Node* node)
@@ -622,7 +757,7 @@ void generate_assignment(Node* node)
 	{
 	case IMMEDIATE:
 		set_bc_immed(source_term.immediate);
-		pop_hl;
+		load_hl_stack_address(target_term.type.local);
 		ld_mem_hl_c;
 		if (target_size > 1)
 		{
@@ -631,7 +766,7 @@ void generate_assignment(Node* node)
 		}
 		break;
 	case A:
-		pop_hl;
+		load_hl_stack_address(target_term.type.local);
 		ld_mem_hl_a;
 		if (target_size > 1)
 		{ 
@@ -642,7 +777,7 @@ void generate_assignment(Node* node)
 		break;
 	case HL:
 		set_bc_hl;
-		pop_hl;
+		load_hl_stack_address(target_term.type.local);
 		ld_mem_hl_c;
 		if (target_size > 1)
 		{
@@ -723,8 +858,8 @@ byte generate_condition(Node* node)
 				switch (left.location)
 				{
 				case IMMEDIATE: set_a_immed(left.immediate);
+				case HL: set_a_l; // a=l  and fall back to push af
 				case A: push_af; break;
-				case HL: set_h_immed(0); push_hl; break;
 				default:
 					ERROR_RET(node->line);
 				}
@@ -733,9 +868,9 @@ byte generate_condition(Node* node)
 				{
 				case IMMEDIATE:
 					if (swap) set_a_immed(right.immediate);
-					else set_hl_immed(right.immediate); 
+					else set_h_immed(right.immediate); 
 					break;
-				case A: if (!swap) set_l_a; break;
+				case A: if (!swap) set_h_a; break;
 				case HL: if (swap) set_a_l; break;
 				default:
 					ERROR_RET(node->line);
@@ -744,7 +879,7 @@ byte generate_condition(Node* node)
 			else ERROR_RET(node->line);
 			if (swap) pop_hl;
 			else pop_af;
-			write_byte(0xBD); // CP L
+			write_byte(0xBC); // CP H
 			switch (node->type)
 			{
 			case LT: return 0x38; // JR C
@@ -797,13 +932,34 @@ void generate_ifelse(Node* node)
 	add_known_address(end_of_else,write_offset);
 }
 
+void generate_return(Node* node)
+{
+	if (!node->parameters) ERROR_RET(node->line);
+	Term res;
+	calculate_expression(node->parameters, &res);
+	switch (res.location)
+	{
+	case IMMEDIATE: set_a_immed(res.immediate); break;
+	case A: break;
+	case HL: set_a_l; break;
+	default:
+		ERROR_RET(node->line);
+	}
+}
+
 void generate_statement(Node* statement)
 {
+#ifdef DEV
+	write_offset_line(statement->line);
+#endif
 	if (statement->type == ASSIGN) generate_assignment(statement);
 	else if (statement->type == WHILE) generate_cond_block(statement,1);
 	else if (statement->type == IF) generate_cond_block(statement,0);
 	else if (statement->type == CALL) generate_call(statement);
 	else if (statement->type == IFELSE) generate_ifelse(statement);
+	else if (statement->type == RETURN) generate_return(statement);
+	else if (statement->type == VAR);
+	else ERROR_RET(statement->line);
 }
 
 void generate_block(Node* block)
@@ -820,6 +976,7 @@ void generate_block(Node* block)
 // Returns the offset beyond the function
 void generate_function(Node* func, word locals_size)
 {
+	write_offset_line(func->line);
 	add_known_address(func->name,write_offset);
 	word neg_locals = -locals_size;
 	byte init_stack[] = {
@@ -872,7 +1029,7 @@ void add_variable(Node* node)
 	Variable var;
 	var.type.local = 0;
 	var.name = node->name;
-	var.address = write_offset;
+	var.address = write_offset  + 0x1000;
 	var.size = var_size(node);
 	var.type.base_type = node->data_type;
 	vector_push(variables, &var);
@@ -891,7 +1048,11 @@ void add_struct(Node* node)
 	{
 		field.name = child->name;
 		field.type = child->data_type;
+		field.length = 1;
+		if (child->data_type.type == ARRAY)
+			field.length = child->parameters->name;
 		vector_push(s.fields, &field);
+		child=child->sibling;
 	}
 	vector_push(structs, &s);
 }
@@ -960,6 +1121,9 @@ void gen_init()
 
 void gen_shut()
 {
+#ifdef DEV
+	close_line_offsets();
+#endif
 	vector_shut(unknowns);
 	vector_shut(knowns);
 	vector_shut(variables);

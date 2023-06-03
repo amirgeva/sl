@@ -1,9 +1,10 @@
 #include "dev.h"
-
+#include "datastr/strhash.h"
 
 #ifdef DEV
 
 #include <stdio.h>
+#include <stdlib.h>
 
 FILE* output=0;
 

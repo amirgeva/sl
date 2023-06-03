@@ -1,5 +1,6 @@
 #ifdef DEV
 #include <stdio.h>
+#include <stdlib.h>
 #endif
 #include "strhash.h"
 #include "memory.h"
@@ -82,7 +83,7 @@ byte next_byte()
 	return *ptr++;
 }
 
-byte write_output(word offset, byte* data, word length) 
+byte write_output(word offset, const byte* data, word length) 
 { 
 	(void)offset;
 	(void*)data;

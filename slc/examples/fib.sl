@@ -32,18 +32,21 @@ end
 fun fib(byte x, array byte res)
 	var byte p
 	var byte q
-	if (x=0) | (x=1)
-		res[0]=1
+	if x<2
+		return 1
 	else
-		fib(x-1,p)
-		fib(x-2,q)
-		res[0]=p+q
+		p=fib(x-1)
+		q=fib(x-2)
+		return p+q
 	end
 end
 
 fun main()
-	var array 1 byte a
+	var byte a
 	init_hex()
-	fib(7,a)
-	printnum(a[0])
+	a=fib(7)
+	printnum(a)
+	while a>0
+		a=fib(7)
+	end
 end

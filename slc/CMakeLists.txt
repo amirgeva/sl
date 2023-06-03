@@ -18,12 +18,17 @@ add_definitions(-DDEV)
 add_definitions(-DCODE_FILE)
 endif(WIN32)
 
+if(UNIX)
+add_definitions(-DDEV)
+add_definitions(-DCODE_FILE)
+endif(UNIX)
+
 add_library(lexer STATIC lexer.c lexer.h)
 add_library(dev STATIC dev.c dev.h)
 add_library(parser STATIC parser.c parser.h)
 add_library(codegen STATIC codegen.c codegen.h)
 add_executable(slc main.c)
-target_link_libraries(slc codegen dev lexer parser utils datastr)
+target_link_libraries(slc codegen dev lexer parser datastr utils)
 
 add_subdirectory(datastr)
 add_subdirectory(utils)

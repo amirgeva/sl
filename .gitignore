@@ -1,7 +1,11 @@
 build/
+buildu/
 .idea/
 z80/
 *.bin
+*.log
+*.lst
+*.sh
 
 # Prerequisites
 *.d

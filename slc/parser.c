@@ -28,12 +28,13 @@ typedef struct context_
 	Node*	node;
 } Context;
 
+void error_exit(word line, int rc);
 
+// Stack of block nodes: structs, functions, if / while blocks
 static Context context_stack[CONTEXT_LIMIT];
 static byte  error = 0;
 static byte  context_depth = 0xFF;
-static word  cur_index = 0;
-//static word  tokens_size;
+static word  cur_index = 0;				// Index of current token
 static token_func get_lex_token = 0;
 static word  line_number = 1;
 static word  function_count=0;
@@ -103,8 +104,6 @@ byte get_token(word index, Token* t)
 	}
 	return 1;
 }
-
-//#define PULL(x) if (!pull(x)) ERROR_RET
 
 void push_context(state c, Node* node)
 {
@@ -314,12 +313,6 @@ Node* parse_condition()
 	return node;
 }
 
-/*
-t.type == GT || t.type == LT || t.type == GE || t.type == LE ||
-		t.type == EQ ||
-*/
-
-
 Node* parse_call()
 {
 	Token t;
@@ -369,6 +362,7 @@ Node* parse_statement()
 	if (t.type == IDENT)
 	{
 		// Could be assignment or function call
+		// Read next token to disambiguate.  Then undo and re-parse
 		NEXT_TOKEN;
 		cur_index -= 2; // Undo ident and LPAREN
 		if (t.type == LPAREN)

@@ -1,6 +1,6 @@
 add_executable(test_vector test_vector.cpp)
 SET_TARGET_PROPERTIES(test_vector PROPERTIES FOLDER "Tests")
-target_link_libraries(test_vector utils datastr GTest::gtest GTest::gtest_main GTest::gmock GTest::gmock_main)
+target_link_libraries(test_vector datastr GTest::gtest GTest::gtest_main GTest::gmock GTest::gmock_main utils)
 add_executable(test_memory test_memory.cpp)
 SET_TARGET_PROPERTIES(test_memory PROPERTIES FOLDER "Tests")
-target_link_libraries(test_memory utils datastr GTest::gtest GTest::gtest_main GTest::gmock GTest::gmock_main)
+target_link_libraries(test_memory datastr GTest::gtest GTest::gtest_main GTest::gmock GTest::gmock_main utils)
