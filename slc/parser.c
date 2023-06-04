@@ -259,10 +259,12 @@ Node* parse_expression()
 		if (!expr) ERROR_RET;
 		add_child(node, expr);
 		EXPECT(RPAREN);
-		return node;
 	}
-	--cur_index;
-	node = parse_value();
+	else
+	{
+		--cur_index;
+		node = parse_value();
+	}
 	if (!node) return 0;
 	NEXT_TOKEN;
 	if (t.type == PLUS || t.type == MINUS || t.type == LSH || t.type == RSH ||

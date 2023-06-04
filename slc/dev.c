@@ -204,6 +204,13 @@ void dev_print_tree_node(Node* node, int indent)
 	case IF:
 	case IFELSE:print_indent(indent); print_cond("if", node); break;
 	case CALL:	print_indent(indent); print_call(node); break;
+
+	case PLUS:		print_indent(indent); fprintf(output,"+\n"); break;
+	case LSH:		print_indent(indent); fprintf(output, "<<\n"); break;
+	case LPAREN:	print_indent(indent); fprintf(output, "()\n"); break;
+	case NUMBER:	print_indent(indent); fprintf(output, "%hd\n", node->name); break;
+	case IDENT:		print_indent(indent); print_name(node->name); fprintf(output, "\n"); break;
+	//case PLUS:  print_indent(indent); fprintf(output, "+"); break;
 	}
 }
 

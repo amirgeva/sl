@@ -11,6 +11,7 @@ void exit(int rc) { (void)rc; }
 #else
 #include <stdio.h>
 #include <stdlib.h>
+#include <dev.h>
 #endif
 
 void error_exit(word line, int rc)
@@ -105,6 +106,11 @@ word get_known_address(word line, word name)
 		if (a->name==name)
 			return a->address + 0x1000; // Add OS size offset
 	}
+#ifdef DEV
+	char buf[32];
+	sh_text(buf,name);
+	printf("Missing symbol %s\n",buf);
+#endif
 	ERROR_RET(line);
 	return 0;
 }
@@ -414,7 +420,7 @@ void set_prim_type(BaseType* t, byte type_name)
 {
 	t->type = VAR;
 	t->sub_type = PRIMITIVE;
-	t->type = type_name;
+	t->type_name = type_name;
 }
 
 void get_node_address(Node* node, Term*);
@@ -579,7 +585,10 @@ void calculate_expression(Node* node, Term* res)
 		res->type.base_type.sub_type=PRIMITIVE;
 		res->type.base_type.type_name=BYTE;
 	}
-	else ERROR_RET(node->line);
+	else if (node->type == LPAREN)
+	{
+		calculate_expression(node->child, res);
+	} else ERROR_RET(node->line);
 }
 
 void shift_left_hl(byte bits)
@@ -999,18 +1008,33 @@ void generate_function(Node* func, word locals_size)
 
 void generate_common_functions()
 {
-	Address address;
-	address.name = sh_get("mult_bc_de");
-	address.address = write_offset;
-	vector_push(knowns, &address);
-	const byte mult_code[] = {	0x21,0x00,0x00,0x78,0x06,0x10,0x29,0xCB,
-								0x21,0x17,0x30,0x01,0x19,0x10,0xF7,0xC9 };
-	WRITE(mult_code);
-	address.name=sh_get("gpu_block");
-	address.address = write_offset;
-	vector_push(knowns, &address);
-	const byte gpu_code[] = { 0xC1, 0xE1, 0xE5, 0xC5, 0x3E, 0x08, 0xCF, 0xC9 };
-	WRITE(gpu_code);
+#define COMMON_FUNC(func_name,...) {\
+Address address; address.name=sh_get(func_name); address.address=write_offset;\
+vector_push(knowns, &address); const byte code_bytes[] = __VA_ARGS__; WRITE(code_bytes); }
+
+	byte mult_offset=write_offset; // Assume low 0x1000 address, store low byte
+	// Generic multiplication   HL = BC * DE
+	COMMON_FUNC("mult_bc_de", { 0x21,0x00,0x00,0x78,0x06,0x10,0x29,0xCB,
+								0x21,0x17,0x30,0x01,0x19,0x10,0xF7,0xC9 });
+
+	//                        pop hl  pop bc  pop de  push hl  jp mult_bc_de
+	COMMON_FUNC("multiply", { 0xE1,   0xC1,   0xD1,   0xE5,    0xC3, mult_offset, 0x10 });
+	
+	// OS Service, send block to GPU
+	COMMON_FUNC("gpu_block", { 0xC1, 0xE1, 0xE5, 0xC5, 0x3E, 0x08, 0xCF, 0xC9 });
+
+	//							    A = 3    RST   RET
+	COMMON_FUNC("input_empty", { 0x3E, 0x03, 0xCF, 0xC9 });
+
+	//                             A = 4    RST   RET
+	COMMON_FUNC("input_read", { 0x3E, 0x04, 0xCF, 0xC9 });
+
+	//                        pop hl  pop af  push af  jp (hl)
+	COMMON_FUNC("highbyte", { 0xE1,   0xF1,   0xF5,    0xE9 });
+
+	//                       pop hl  pop bc  push bc  ld a,c  jp (hl)
+	COMMON_FUNC("lowbyte", { 0xE1,   0xC1,   0xC5,    0x79,   0xE9 });
+#undef COMMON_FUNC
 }
 
 void fill_unknowns()
@@ -1088,24 +1112,8 @@ byte generate_code(parse_node_func parse_node_, file_write_func fwf)
 		case FUN:		add_function(node);	break;
 		default: ERROR_RET(node->line);
 		}
-		release_node(node);
+		release_node(node); // Rolling generation, release completed nodes
 	}
-	//word globals_size = scan_variables(root, 0, 0);
-	//word globals_count = vector_size(variables);
-	//for (word i = 0; i < globals_size; ++i)		// Reserve room for globals
-	//	write_byte(0);
-	//Node* child = root->child;
-	//while (child)
-	//{
-	//	if (child->type == FUN && child->child) // Not an extern
-	//	{
-	//		scan_parameters(child);
-	//		word locals_size = scan_variables(child, 0, 1);
-	//		generate_function(child, locals_size);
-	//		vector_resize(variables, globals_count); // Remove local vars
-	//	}
-	//	child = child->sibling;
-	//}
 	fill_unknowns();
 	return 1;
 }

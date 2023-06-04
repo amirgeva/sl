@@ -1,22 +1,20 @@
-extern fun gpu_block(array byte buffer)
-extern fun input_empty()
-extern fun input_read()
+#extern fun gpu_block(array byte buffer)
+#extern fun input_empty()
+#extern fun input_read()
 
 const W 11
 const H 16
 const AREA 171 # 11*16
 const L 7
 
-var array 8 word stub
-
 fun pixel_cursor(word x, word y)
 	var array 6 byte cmd
 	cmd[0] = 5
 	cmd[1] = 5
-	cmd[2] = x & 255
-	cmd[3] = x >> 8
-	cmd[4] = y & 255
-	cmd[5] = y >> 8
+	cmd[2] = lowbyte(x)
+	cmd[3] = highbyte(x)
+	cmd[4] = lowbyte(y)
+	cmd[5] = highbyte(y)
 	gpu_block(cmd)
 end
 
@@ -57,10 +55,13 @@ fun init_cubes()
 end
 
 fun wait_key()
-	if input_empty()
+	var byte b
+	b = input_empty()
+	if b>0
 		return 255
 	end
-	return input_read()
+	b = input_read()
+	return b
 end
 
 struct Board
@@ -95,15 +96,27 @@ fun board_index(byte x, byte y)
 		return 255
 	end
 	var byte index
-	index = multiply(y,W)
+	#index = multiply(y,W)
+	index = (y<<3)+(y<<1)+y  # Same as y*11
 	index = index + x
 	return index
 end
 
 fun pos_free(Board board, byte x, byte y)
+	var byte index
 	index = board_index(x,y)
 	if index=255
 		return 0
 	end
-	return board.grid[index] = 0
+	if board.grid[index] = 0
+		return 1
+	end
+	return 0
+end
+
+
+fun main()
+	var Board board
+	init_board(board)
+	init_cubes()
 end

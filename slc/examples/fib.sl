@@ -29,7 +29,7 @@ fun printnum(byte num)
 end
 
 
-fun fib(byte x, array byte res)
+fun fib(byte x)
 	var byte p
 	var byte q
 	if x<2
@@ -46,7 +46,4 @@ fun main()
 	init_hex()
 	a=fib(7)
 	printnum(a)
-	while a>0
-		a=fib(7)
-	end
 end
