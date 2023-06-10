@@ -3,7 +3,19 @@
 #include <vector.h>
 #include <strhash.h>
 
-#define ERROR_RET(line) { error=1; error_exit(line,1); }
+const char* UNKNOWN_TYPE   = "Unknown type";
+const char* UNKNOWN_STRUCT = "Unknown struct";
+const char* INVALID_TYPE   = "Invalid type";
+const char* UNKNOWN_FUNCTION = "Unknown function";
+const char* UNKNOWN_VAR = "Unknown variable";
+const char* INVALID_SIZE = "Invalid Size";
+const char* MISSING_NODE = "Missing node";
+const char* INVALID_LOCATION = "Invalid location";
+const char* UNSUPPORTED = "Unsupported";
+const char* EXPECT_IMMED = "Expecting immediate";
+const char* INVALID_OPCODE = "Invalid opcode";
+
+#define ERROR_RET(line, msg) { error=1; error_exit(line,msg,1); }
 #define ASSERT(x)
 
 #ifndef DEV
@@ -11,13 +23,14 @@ void exit(int rc) { (void)rc; }
 #else
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <dev.h>
 #endif
 
-void error_exit(word line, int rc)
+void error_exit(word line, const char* msg, int rc)
 {
 #ifdef DEV
-	printf("Error in line %d\n",line);
+	printf("%s\nError in line %d\n",msg, line);
 #endif
 	exit(rc);
 }
@@ -72,14 +85,24 @@ typedef struct address_
 	word		address;
 } Address;
 
+typedef struct function_prototype_
+{
+	word		name;
+	BaseType	return_type;
+	Vector* parameters;
+} FunctionPrototype;
+
 static byte error=0;
 static Vector* structs;
 static Vector* variables;
 static Vector* knowns;
 static Vector* unknowns;
+static Vector* function_prototypes;
 static parse_node_func parse_node;
 static file_write_func raw_write=0;
 static word write_offset=0;
+static word function_end=0;
+static Node* function_node=0;
 
 #ifdef DEV
 #include <stdio.h>
@@ -94,6 +117,8 @@ void write_offset_line(word line)
 		line_offsets_file = fopen("line_offsets.log", "w");
 	fprintf(line_offsets_file,"%hd %hd\n",line,0x1000+write_offset);
 }
+#else
+void write_offset_line(word line) {}
 #endif
 
 
@@ -106,12 +131,13 @@ word get_known_address(word line, word name)
 		if (a->name==name)
 			return a->address + 0x1000; // Add OS size offset
 	}
-#ifdef DEV
 	char buf[32];
 	sh_text(buf,name);
-	printf("Missing symbol %s\n",buf);
+#ifdef DEV
+	strcat(buf," missing");
+	//printf("Missing symbol %s\n",buf);
 #endif
-	ERROR_RET(line);
+	ERROR_RET(line,buf);
 	return 0;
 }
 
@@ -151,10 +177,10 @@ void write_byte(byte b) { write(&b, 1); }
 #define and_c	write_byte(0xA1)
 #define or_c	write_byte(0xB1)
 #define xor_c	write_byte(0xA9)
-const byte lsh_c_cmd[] = { 0xCB, 0x21 };
-#define lsh_c MULTI_BYTE_CMD(lsh_c)
-const byte rsh_c_cmd[] = { 0xCB, 0x39 };
-#define rsh_c MULTI_BYTE_CMD(rsh_c)
+//const byte lsh_c_cmd[] = { 0xCB, 0x21 };
+//#define lsh_c MULTI_BYTE_CMD(lsh_c)
+//const byte rsh_c_cmd[] = { 0xCB, 0x39 };
+//#define rsh_c MULTI_BYTE_CMD(rsh_c)
 const byte lsh_hl_cmd[] = { 0xCB, 0x25, 0xCB, 0x14 };
 #define lsh_hl MULTI_BYTE_CMD(lsh_hl)
 
@@ -168,6 +194,8 @@ const byte push_ix_cmd[] = { 0xDD,0xE5 };
 #define pop_de		write_byte(0xD1)
 
 #define ld_a_mem_hl	write_byte(0x7E)
+#define ld_c_mem_hl write_byte(0x4E)
+#define ld_b_mem_hl write_byte(0x46)
 #define add_hl_bc	write_byte(0x09)
 #define add_hl_de	write_byte(0x19)
 #define cp_c		write_byte(0xB9)
@@ -195,13 +223,18 @@ const byte set_hl_bc_cmd[] = { 0xC5, 0xE1 }; // PUSH BC    POP HL
 const byte set_hl_a_cmd[] = { 0x6F, 0x26, 0x00 }; // LD L,A    LD H,#0
 #define set_hl_a MULTI_BYTE_CMD(set_hl_a)
 
+#define set_e_a write_byte(0x5F)
 #define set_b_c write_byte(0x41)
 #define set_c_a write_byte(0x4F)
 #define set_l_a write_byte(0x6F)
 #define set_h_a write_byte(0x67)
 #define set_a_l write_byte(0x7D)
+const byte set_de_hl_cmd[] = { 0xE5, 0xD1 };
+#define set_de_hl MULTI_BYTE_CMD(set_de_hl)
+
 void set_a_immed(byte b) { byte cmd[] = { 0x3E, b }; WRITE(cmd); }
 void set_h_immed(byte b) { byte cmd[] = { 0x26, b }; WRITE(cmd); }
+void set_d_immed(byte b) { byte cmd[] = { 0x16, b }; WRITE(cmd); }
 void set_b_immed(byte b) { byte cmd[] = { 0x06, b }; WRITE(cmd); }
 void set_bc_immed(word w) { byte cmd[] = { 0x01, (w & 0xFF), (w >> 8) }; WRITE(cmd); }
 void set_de_immed(word w) { byte cmd[] = { 0x11, (w & 0xFF), (w >> 8) }; WRITE(cmd); }
@@ -210,7 +243,7 @@ void set_hl_immed(word w) { byte cmd[] = { 0x21, (w & 0xFF), (w >> 8) }; WRITE(c
 
 void generate_statement(Node* statement);
 void generate_block(Node* block);
-void generate_call(Node* node);
+void generate_call(Node* node, Term* res);
 
 
 byte is_binary_operator(byte type)
@@ -231,6 +264,33 @@ byte is_binary_operator(byte type)
 
 void print_name(word id);
 word struct_size(word line, word name);
+FunctionPrototype* find_prototype(word name);
+
+void set_a_res(word line, Term* res)
+{
+	switch (res->location)
+	{
+	case IMMEDIATE: set_a_immed(res->immediate); break;
+	case A: break;
+	case HL: set_a_l; break;
+	default:
+		ERROR_RET(line, INVALID_LOCATION);
+	}
+}
+
+void set_hl_res(word line, Term* res)
+{
+	switch (res->location)
+	{
+	case IMMEDIATE:
+		set_hl_immed(res->immediate);
+		break;
+	case HL: break;
+	case A:	 set_hl_a; break;
+	case STACK: pop_hl; break;
+	default: ERROR_RET(line,INVALID_LOCATION);
+	}
+}
 
 word type_size(word line, BaseType* base_type)
 {
@@ -243,7 +303,7 @@ word type_size(word line, BaseType* base_type)
 	case SWORD:
 	case WORD: return 2;
 	default:
-		ERROR_RET(line);
+		ERROR_RET(line,UNKNOWN_TYPE);
 	}
 	return 0;
 }
@@ -268,7 +328,7 @@ Struct* find_struct(word line, word name)
 		Struct* s = (Struct*)vector_access(structs, i);
 		if (s->name == name) return s;
 	}
-	ERROR_RET(line);
+	ERROR_RET(line,UNKNOWN_STRUCT);
 	return 0;
 }
 
@@ -308,7 +368,7 @@ word var_size(Node* node)
 	{
 		return node->parameters->name * type_size(node->line, &node->data_type);
 	}
-	else ERROR_RET(node->line);
+	else ERROR_RET(node->line,INVALID_TYPE);
 	return 0;
 }
 
@@ -330,14 +390,14 @@ word local_var_size(Node* node)
 	return sum;
 }
 
-void scan_parameters(Node* fun)
+word calculate_parameters(Node* param, word offset)
 {
-	if (!fun) return;
-	Variable var;
-	Node* param = fun->parameters;
-	word offset = 2;
-	while (param)
+	if (param)
 	{
+		// Use recursion to invert order (first parameter has highest offset)
+		if (param->sibling)
+			offset = calculate_parameters(param->sibling, offset);
+		Variable var;
 		offset += 2;
 		var.name = param->name;
 		var.address = offset;
@@ -345,8 +405,14 @@ void scan_parameters(Node* fun)
 		var.type.base_type = param->data_type;
 		var.type.local = 1;
 		vector_push(variables, &var);
-		param = param->sibling;
 	}
+	return offset;
+}
+
+void scan_parameters(Node* fun)
+{
+	if (fun)
+		calculate_parameters(fun->parameters, 2);
 }
 
 // Accepts a block node (root / fun / while / if) and a variables vector.
@@ -405,6 +471,38 @@ void generate_shift_a_c(byte opcode)
 	WRITE(cmd);
 }
 
+void generate_rsh_hl_c()
+{
+	/*
+	* generate code as:
+	*	if c==0 return
+	*			b=c
+	* loop:		srl h
+	*			rr l
+	*			b=b-1
+	*			if b!=0 goto loop
+	*/
+	//                   a-=a  a-c   <jz to end> b=c    shift h       rr l     jnz loop
+	const byte cmd[] = { 0x97, 0xB9, 0x28, 0x07, 0x41, 0xCB, 0x3C, 0xCB, 0x1D, 0x10, 0xFA };
+	WRITE(cmd);
+}
+
+void generate_lsh_hl_c()
+{
+	/*
+	* generate code as:
+	*	if c==0 return
+	*			b=c
+	* loop:		srl h
+	*			rr l
+	*			b=b-1
+	*			if b!=0 goto loop
+	*/
+	//                   a-=a  a-c   <jz to end> b=c    sla l         rl h     jnz loop
+	const byte cmd[] = { 0x97, 0xB9, 0x28, 0x07, 0x41, 0xCB, 0x25, 0xCB, 0x14, 0x10, 0xFA };
+	WRITE(cmd);
+}
+
 byte find_variable(word name, Variable* var)
 {
 	word n = vector_size(variables);
@@ -447,6 +545,11 @@ void calculate_expression(Node* node, Term* res)
 					push_ix;
 					pop_bc;
 					add_hl_bc;
+					if (var.address < 0x100) // function parameter
+					{
+						ld_bc_mem_hl;
+						set_hl_bc;
+					}
 				}
 				push_hl;
 				res->location = STACK;
@@ -456,16 +559,41 @@ void calculate_expression(Node* node, Term* res)
 				word size = type_size(node->line, &var.type.base_type);
 				if (var.type.local)
 				{
-					if (size == 1)
+					word mask = (var.address & 0xFF80);
+
+					if (mask == 0 || mask == 0xFF80) // 0 of FF80 for low offset
 					{
-						ld_a_mem_ix(var.address);
-						res->location = A;
+						if (size == 1)
+						{
+							ld_a_mem_ix(var.address);
+							res->location = A;
+						}
+						else
+						{
+							ld_l_mem_ix(var.address);
+							ld_h_mem_ix(var.address + 1);
+							res->location = HL;
+						}
 					}
 					else
 					{
-						ld_l_mem_ix(var.address);
-						ld_h_mem_ix(var.address + 1);
-						res->location = HL;
+						set_hl_immed(var.address);
+						push_ix;
+						pop_bc;
+						add_hl_bc;
+						if (size == 1)
+						{
+							ld_a_mem_hl;
+							res->location = A;
+						}
+						else
+						{
+							ld_c_mem_hl;
+							inc_hl;
+							ld_b_mem_hl;
+							set_hl_bc;
+							res->location = HL;
+						}
 					}
 				}
 				else
@@ -483,12 +611,18 @@ void calculate_expression(Node* node, Term* res)
 				}
 			}
 		}
-		else ERROR_RET(node->line);
+		else ERROR_RET(node->line, UNKNOWN_VAR);
 	}
 	else if (node->type == DOT || node->type == INDEX)
 	{
 		get_node_address(node, res);
 		pop_hl;
+		if (res->type.local)
+		{
+			push_ix;
+			pop_bc;
+			add_hl_bc;
+		}
 		word size = type_size(node->line, &res->type.base_type);
 		if (size == 1)
 		{
@@ -503,21 +637,16 @@ void calculate_expression(Node* node, Term* res)
 			res->location = HL;
 			res->type.local = 0;
 		}
-		else ERROR_RET(node->line);
+		else ERROR_RET(node->line,INVALID_SIZE);
 	}
 	else if (is_binary_operator(node->type))
 	{
-		if (!node->child || !node->child->sibling) ERROR_RET(node->line);
+		if (!node->child || !node->child->sibling) ERROR_RET(node->line,MISSING_NODE);
 		Term left,right;
 		calculate_expression(node->child,&left);
 		// Place the left value on the stack
-		switch (left.location)
-		{
-		case A:		push_af; break;
-		case IMMEDIATE: set_hl_immed(left.immediate);
-		case HL:	push_hl; break;
-		default: ERROR_RET(node->line);
-		}
+		set_hl_res(node->line, &left);
+		push_hl;
 		calculate_expression(node->child->sibling,&right);
 		word left_size = 1, right_size = 1;
 		if (left.location!=IMMEDIATE) 
@@ -525,41 +654,24 @@ void calculate_expression(Node* node, Term* res)
 		if (right.location != IMMEDIATE)
 			right_size = type_size(node->line, &right.type.base_type);
 		word max_size = (left_size > 1 || right_size > 1) ? 2 : 1;
-		switch (right.location)
-		{
-		case A:  
-		{
-			if (max_size > 1)
-			{
-				push_af;
-				pop_bc;
-				set_b_immed(0);
-			}
-			else
-			{
-				set_c_a;
-				set_b_immed(0);
-			}
-			break;
-		}
-		case HL: set_bc_hl; break;
-		case IMMEDIATE: set_bc_immed(right.immediate); break;
-		default:
-			ERROR_RET(node->line);
-		}
+		set_hl_res(node->line, &right);
+		set_bc_hl;
+		pop_hl;
 		if (max_size > 1)
 		{
-			pop_hl;
+			res->location = HL; set_prim_type(&res->type.base_type, WORD);
 			switch (node->type)
 			{
-			case PLUS: add_hl_bc; res->location = HL; set_prim_type(&res->type.base_type, WORD); break;
-			case MINUS: sub_hl_bc; res->location = HL; set_prim_type(&res->type.base_type, WORD); break;
-			default: ERROR_RET(node->line);
+			case PLUS: add_hl_bc; break;
+			case MINUS: sub_hl_bc; break;
+			case LSH: generate_lsh_hl_c(); break;
+			case RSH: generate_rsh_hl_c(); break;
+			default: ERROR_RET(node->line,UNSUPPORTED);
 			}
 		}
 		else
 		{
-			pop_af;
+			set_a_l;
 			switch (node->type)
 			{
 			case PLUS: add_c; break;
@@ -569,7 +681,7 @@ void calculate_expression(Node* node, Term* res)
 			case AMP: and_c; break;
 			case PIPE: or_c; break;
 			case CARET: xor_c; break;
-			default: ERROR_RET(node->line);
+			default: ERROR_RET(node->line, UNSUPPORTED);
 			}
 			res->location = A;
 			set_prim_type(&res->type.base_type, BYTE);
@@ -577,18 +689,18 @@ void calculate_expression(Node* node, Term* res)
 	}
 	else if (node->type == CALL)
 	{
-		generate_call(node);
-		res->location = A;
-		res->immediate = 0;
-		res->type.local = 0;
-		res->type.base_type.type=VAR;
-		res->type.base_type.sub_type=PRIMITIVE;
-		res->type.base_type.type_name=BYTE;
+		generate_call(node, res);
+		//res->location = A;
+		//res->immediate = 0;
+		//res->type.local = 0;
+		//res->type.base_type.type=VAR;
+		//res->type.base_type.sub_type=PRIMITIVE;
+		//res->type.base_type.type_name=BYTE;
 	}
 	else if (node->type == LPAREN)
 	{
 		calculate_expression(node->child, res);
-	} else ERROR_RET(node->line);
+	} else ERROR_RET(node->line,UNSUPPORTED);
 }
 
 void shift_left_hl(byte bits)
@@ -646,13 +758,13 @@ void get_node_address(Node* node, Term* res)
 			push_hl;
 		}
 		else
-		ERROR_RET(node->line);
+		ERROR_RET(node->line,UNKNOWN_VAR);
 	}
 	else if (node->type == INDEX)
 	{
 		Term array_address;
 		get_node_address(node->child,&array_address);
-		if (array_address.type.base_type.type != ARRAY) ERROR_RET(node->line);
+		if (array_address.type.base_type.type != ARRAY) ERROR_RET(node->line,INVALID_TYPE);
 		word elem_size = type_size(node->line, &array_address.type.base_type);
 		Term index;
 		calculate_expression(node->child->sibling,&index);
@@ -662,13 +774,7 @@ void get_node_address(Node* node, Term* res)
 		}
 		else
 		{
-			switch (index.location)
-			{
-			case A:				set_hl_a; break;
-			case HL:			break;
-			case STACK:
-			default:	ERROR_RET(node->line);
-			}
+			set_hl_res(node->line, &index);
 			if (elem_size>1)
 				multiply_hl(node->line, elem_size);
 		}
@@ -682,17 +788,18 @@ void get_node_address(Node* node, Term* res)
 		}
 		push_hl;
 		res->type.base_type = array_address.type.base_type;
+		res->type.base_type.type = VAR;
 		res->type.local = 0; // No optimization yet.  TBD
 	}
 	else if (node->type == DOT)
 	{
 		Term struct_addr;
 		get_node_address(node->child,&struct_addr);
-		if (struct_addr.type.base_type.sub_type != STRUCT) ERROR_RET(node->line);
+		if (struct_addr.type.base_type.sub_type != STRUCT) ERROR_RET(node->line,INVALID_TYPE);
 		Node* field_node = node->child->sibling;
 		Term field;
 		struct_field_offset(node->line, struct_addr.type.base_type.type_name, field_node->name, &field);
-		if (field.location != IMMEDIATE) ERROR_RET(node->line);
+		if (field.location != IMMEDIATE) ERROR_RET(node->line,EXPECT_IMMED);
 		res->type.local = struct_addr.type.local;
 		res->type.base_type = field.type.base_type;
 		pop_bc; // struct base address
@@ -700,35 +807,43 @@ void get_node_address(Node* node, Term* res)
 		add_hl_bc; // base+offset
 		push_hl;
 	}
-	else ERROR_RET(node->line);
+	else ERROR_RET(node->line,UNSUPPORTED);
 }
 
-void generate_call(Node* node)
+void generate_call(Node* node, Term* res)
 {
+	FunctionPrototype* fp=find_prototype(node->name);
+	if (!fp) ERROR_RET(node->line,UNKNOWN_FUNCTION);
+	res->type.base_type=fp->return_type;
+	res->location=fp->return_type.type_name==BYTE?A:HL;
+	word n = vector_size(fp->parameters);
 	Node* p=node->parameters;
 	byte param_count=0;
 	while (p)
 	{
+		if (param_count >= n) ERROR_RET(node->line, "Too many parameters");
+		BaseType* param_type = vector_access(fp->parameters, param_count);
 		++param_count;
 		Term res;
-		if (p->data_type.type == ARRAY || p->data_type.sub_type == STRUCT)
-		{
-			get_node_address(p,&res);
-			if (res.location!=STACK) ERROR_RET(node->line);
-		}
-		else
+		//if (p->data_type.type == ARRAY || p->data_type.sub_type == STRUCT)
+		//{
+		//	get_node_address(p,&res);
+		//	if (res.location!=STACK) ERROR_RET(node->line,INVALID_LOCATION);
+		//}
+		//else
 		{
 			calculate_expression(p,&res);
-			switch (res.location)
+			if (res.location==IMMEDIATE && param_type->type==VAR &&
+				param_type->sub_type==PRIMITIVE)
 			{
-			case IMMEDIATE:
-				set_hl_immed(res.immediate);
-				break;
-			case HL: break;
-			case A:	 set_hl_a; break;
-			case STACK: pop_hl; break;
-			default: ERROR_RET(node->line);
+				// Immediate can map to both primitives
 			}
+			else if (res.type.base_type.type!=param_type->type || 
+				res.type.base_type.sub_type!=param_type->sub_type ||
+				res.type.base_type.type_name != param_type->type_name)
+				ERROR_RET(node->line,INVALID_TYPE);
+
+			set_hl_res(node->line, &res);
 			push_hl;
 		}
 		p=p->sibling;
@@ -755,46 +870,19 @@ void load_hl_stack_address(byte local)
 void generate_assignment(Node* node)
 {
 	Node* target_node = node->child;
-	Term target_term;
+	Term target_term, source_term;
 	get_node_address(target_node,&target_term);
 	word target_size = type_size(node->line, &target_term.type.base_type);
 	Node* expr_node = target_node->sibling;
-	
-	Term source_term;
 	calculate_expression(expr_node,&source_term);
-	switch (source_term.location)
+	set_hl_res(node->line, &source_term);
+	set_bc_hl;
+	load_hl_stack_address(target_term.type.local);
+	ld_mem_hl_c;
+	if (target_size > 1)
 	{
-	case IMMEDIATE:
-		set_bc_immed(source_term.immediate);
-		load_hl_stack_address(target_term.type.local);
-		ld_mem_hl_c;
-		if (target_size > 1)
-		{
-			inc_hl;
-			ld_mem_hl_b;
-		}
-		break;
-	case A:
-		load_hl_stack_address(target_term.type.local);
-		ld_mem_hl_a;
-		if (target_size > 1)
-		{ 
-			inc_hl;
-			sub_a; 
-			ld_mem_hl_a;
-		}
-		break;
-	case HL:
-		set_bc_hl;
-		load_hl_stack_address(target_term.type.local);
-		ld_mem_hl_c;
-		if (target_size > 1)
-		{
-			inc_hl;
-			ld_mem_hl_b;
-		}
-		break;
-	default: ERROR_RET(node->line);
+		inc_hl;
+		ld_mem_hl_b;
 	}
 }
 
@@ -804,7 +892,7 @@ byte invert_condition(byte b)
 	if (b == 0x30) return 0x38;
 	if (b == 0x28) return 0x20;
 	if (b == 0x20) return 0x28;
-	ERROR_RET(0xFFFF);
+	ERROR_RET(0xFFFF,INVALID_OPCODE);
 	return 0;
 }
 
@@ -814,7 +902,7 @@ word clear_condition_flag(byte b)
 	if (b == 0x30) return 0x37;		// JR NC ->  SCF
 	if (b == 0x28) return 0x01F6;	// JR Z -> OR 1
 	if (b == 0x20) return 0xBF;		// JR NZ -> CP A
-	ERROR_RET(0xFFFF);
+	ERROR_RET(0xFFFF, INVALID_OPCODE);
 	return 0;
 }
 
@@ -864,30 +952,21 @@ byte generate_condition(Node* node)
 			{
 				Term left,right;
 				calculate_expression(node->child, &left);
-				switch (left.location)
-				{
-				case IMMEDIATE: set_a_immed(left.immediate);
-				case HL: set_a_l; // a=l  and fall back to push af
-				case A: push_af; break;
-				default:
-					ERROR_RET(node->line);
-				}
+				set_a_res(node->line, &left);
+				push_af;
 				calculate_expression(node->child->sibling, &right);
-				switch (right.location)
+				set_a_res(node->line, &right);
+				if (swap)
 				{
-				case IMMEDIATE:
-					if (swap) set_a_immed(right.immediate);
-					else set_h_immed(right.immediate); 
-					break;
-				case A: if (!swap) set_h_a; break;
-				case HL: if (swap) set_a_l; break;
-				default:
-					ERROR_RET(node->line);
+					pop_hl;
+				}
+				else
+				{
+					set_h_a;
+					pop_af;
 				}
 			}
-			else ERROR_RET(node->line);
-			if (swap) pop_hl;
-			else pop_af;
+			else ERROR_RET(node->line,UNSUPPORTED);
 			write_byte(0xBC); // CP H
 			switch (node->type)
 			{
@@ -897,17 +976,17 @@ byte generate_condition(Node* node)
 			case GE: return 0x30; // JR NC
 			case EQ: return 0x28; // JR Z
 			case NE: return 0x20; // JR NZ
-			default: ERROR_RET(node->line);
+			default: ERROR_RET(node->line,UNSUPPORTED);
 			}
 		}
 	}
-	ERROR_RET(node->line);
+	ERROR_RET(node->line,UNSUPPORTED);
 	return 0;
 }
 
 void generate_cond_block(Node* node, byte loop)
 {
-	if (!node->parameters) ERROR_RET(node->line);
+	if (!node->parameters) ERROR_RET(node->line,MISSING_NODE);
 	word start_addr = write_offset+0x1000;
 	byte jump = generate_condition(node->parameters);
 	word end_of_block = sh_temp();
@@ -925,7 +1004,7 @@ void generate_cond_block(Node* node, byte loop)
 
 void generate_ifelse(Node* node)
 {
-	if (!node->parameters) ERROR_RET(node->line);
+	if (!node->parameters) ERROR_RET(node->line,MISSING_NODE);
 	byte jump = generate_condition(node->parameters);
 	word end_of_true = sh_temp();
 	add_unknown_address(end_of_true, write_offset + 3);
@@ -943,32 +1022,37 @@ void generate_ifelse(Node* node)
 
 void generate_return(Node* node)
 {
-	if (!node->parameters) ERROR_RET(node->line);
+	if (!node->parameters) ERROR_RET(node->line, MISSING_NODE);
 	Term res;
 	calculate_expression(node->parameters, &res);
-	switch (res.location)
+	if (function_node->data_type.type_name == BYTE)
 	{
-	case IMMEDIATE: set_a_immed(res.immediate); break;
-	case A: break;
-	case HL: set_a_l; break;
-	default:
-		ERROR_RET(node->line);
+		set_a_res(node->line, &res);
 	}
+	else
+	{
+		set_hl_res(node->line, &res);
+		set_de_hl;
+	}
+	add_unknown_address(function_end, write_offset+1);
+	const byte cmd[] = { 0xC3, 0x00, 0x00 };
+	WRITE(cmd);
 }
 
 void generate_statement(Node* statement)
 {
+	Term res;
 #ifdef DEV
 	write_offset_line(statement->line);
 #endif
 	if (statement->type == ASSIGN) generate_assignment(statement);
 	else if (statement->type == WHILE) generate_cond_block(statement,1);
 	else if (statement->type == IF) generate_cond_block(statement,0);
-	else if (statement->type == CALL) generate_call(statement);
+	else if (statement->type == CALL) generate_call(statement,&res);
 	else if (statement->type == IFELSE) generate_ifelse(statement);
 	else if (statement->type == RETURN) generate_return(statement);
 	else if (statement->type == VAR);
-	else ERROR_RET(statement->line);
+	else ERROR_RET(statement->line,UNSUPPORTED);
 }
 
 void generate_block(Node* block)
@@ -985,6 +1069,8 @@ void generate_block(Node* block)
 // Returns the offset beyond the function
 void generate_function(Node* func, word locals_size)
 {
+	function_end = sh_temp();
+	function_node = func;
 	write_offset_line(func->line);
 	add_known_address(func->name,write_offset);
 	word neg_locals = -locals_size;
@@ -1003,37 +1089,81 @@ void generate_function(Node* func, word locals_size)
 	};
 	WRITE(init_stack);
 	generate_block(func);
+	add_known_address(function_end,write_offset);
 	WRITE(close_stack);
+}
+
+// Common functions only accept and return primitives
+// Format string is one letter (B/W) for return type and one such letter
+// per parameter.  Example:  "BWW" ->  fun name(word a, word b)
+void add_common_prototype(word name, const char* proto)
+{
+	if (proto && *proto)
+	{
+		FunctionPrototype fp;
+		BaseType param_type;
+		fp.name=name;
+		set_prim_type(&fp.return_type, *proto == 'B' ? BYTE : WORD);
+		fp.parameters=vector_new(sizeof(BaseType));
+		while (*(++proto))
+		{
+			if (*proto == 'P')
+			{
+				param_type.type=ARRAY;
+				param_type.sub_type=PRIMITIVE;
+				param_type.type_name=BYTE;
+			}
+			else
+				set_prim_type(&param_type, *proto == 'B' ? BYTE : WORD);
+			vector_push(fp.parameters,&param_type);
+		}
+		vector_push(function_prototypes, &fp);
+	}
 }
 
 void generate_common_functions()
 {
-#define COMMON_FUNC(func_name,...) {\
+#define COMMON_FUNC(func_name,proto,...) {\
 Address address; address.name=sh_get(func_name); address.address=write_offset;\
+add_common_prototype(address.name,proto);\
 vector_push(knowns, &address); const byte code_bytes[] = __VA_ARGS__; WRITE(code_bytes); }
 
 	byte mult_offset=write_offset; // Assume low 0x1000 address, store low byte
 	// Generic multiplication   HL = BC * DE
-	COMMON_FUNC("mult_bc_de", { 0x21,0x00,0x00,0x78,0x06,0x10,0x29,0xCB,
-								0x21,0x17,0x30,0x01,0x19,0x10,0xF7,0xC9 });
+	COMMON_FUNC("mult_bc_de", "", { 0x21, 0x00, 0x00, 0x78, 0x06, 0x10, 0x29, 0xCB,
+								    0x21,0x17,0x30,0x01,0x19,0x10,0xF7,0xC9 });
 
-	//                        pop hl  pop bc  pop de  push hl  jp mult_bc_de
-	COMMON_FUNC("multiply", { 0xE1,   0xC1,   0xD1,   0xE5,    0xC3, mult_offset, 0x10 });
+	COMMON_FUNC("multiply", "BWW",
+	//            pop hl  pop bc  pop de  push de   push bc  push hl  jp mult_bc_de
+				{ 0xE1,   0xC1,   0xD1,   0xD5,     0xC5,    0xE5,    0xC3, mult_offset, 0x10 });
 	
 	// OS Service, send block to GPU
-	COMMON_FUNC("gpu_block", { 0xC1, 0xE1, 0xE5, 0xC5, 0x3E, 0x08, 0xCF, 0xC9 });
+	//                         pop bc  pop hl  push hl  push bc    ld a,8    RST 1  ret
+	COMMON_FUNC("gpu_block", "BP", { 0xC1, 0xE1, 0xE5, 0xC5, 0x3E, 0x08, 0xCF, 0xC9 });
+
+	// OS Service, rng
+	//                          ld a,7    RST 1  ret
+	COMMON_FUNC("rng", "W", { 0x3E, 0x07, 0xCF, 0xC9 });
+
+	//                            ld a,9    RST 1  ret
+	COMMON_FUNC("timer", "W", { 0x3E, 0x09, 0xCF, 0xC9});
+
+	// OS Service, cls
+	//                     ld a,0    RST 1  ret
+	COMMON_FUNC("cls", "B", { 0x3E, 0x00, 0xCF, 0xC9 });
 
 	//							    A = 3    RST   RET
-	COMMON_FUNC("input_empty", { 0x3E, 0x03, 0xCF, 0xC9 });
+	COMMON_FUNC("input_empty", "B", { 0x3E, 0x03, 0xCF, 0xC9 });
 
 	//                             A = 4    RST   RET
-	COMMON_FUNC("input_read", { 0x3E, 0x04, 0xCF, 0xC9 });
+	COMMON_FUNC("input_read", "B", { 0x3E, 0x04, 0xCF, 0xC9 });
 
 	//                        pop hl  pop af  push af  jp (hl)
-	COMMON_FUNC("highbyte", { 0xE1,   0xF1,   0xF5,    0xE9 });
+	COMMON_FUNC("highbyte", "BW", { 0xE1, 0xF1, 0xF5, 0xE9 });
 
 	//                       pop hl  pop bc  push bc  ld a,c  jp (hl)
-	COMMON_FUNC("lowbyte", { 0xE1,   0xC1,   0xC5,    0x79,   0xE9 });
+	COMMON_FUNC("lowbyte", "BW", { 0xE1, 0xC1, 0xC5, 0x79, 0xE9 });
+
 #undef COMMON_FUNC
 }
 
@@ -1057,8 +1187,16 @@ void add_variable(Node* node)
 	var.size = var_size(node);
 	var.type.base_type = node->data_type;
 	vector_push(variables, &var);
-	for(word i=0;i<var.size;++i)
-		write_byte(0);
+	const byte* data=0;
+	if (node->data_type.type==ARRAY && node->data)
+		data = vector_access(node->data, 0);
+	else if (node->data_type.type==VAR && node->parameters)
+		data = (const byte*)&node->parameters->name;
+	for (word i = 0; i < var.size; ++i)
+	{
+		if (data) write_byte(*data++);
+		else write_byte(0);
+	}
 }
 
 void add_struct(Node* node)
@@ -1081,15 +1219,44 @@ void add_struct(Node* node)
 	vector_push(structs, &s);
 }
 
+FunctionPrototype* find_prototype(word name)
+{
+	word n = vector_size(function_prototypes);
+	for (word i = 0; i < n; ++i)
+	{
+		FunctionPrototype* fp = vector_access(function_prototypes, i);
+		if (fp->name == name) return fp;
+	}
+	return 0;
+}
+
+void add_function_prototype(Node* node)
+{
+	if (find_prototype(node->name)) return;
+	FunctionPrototype fp;
+	fp.name=node->name;
+	fp.return_type=node->data_type;
+	fp.parameters=vector_new(sizeof(BaseType));
+	Node* param=node->parameters;
+	while (param)
+	{
+		vector_push(fp.parameters,&param->data_type);
+		param=param->sibling;
+	}
+	vector_push(function_prototypes, &fp);
+}
+
 void add_function(Node* node)
 {
-	if (!node->child) // extern
-		return;
-	word globals_size = vector_size(variables);
-	scan_parameters(node);
-	word locals_size = scan_variables(node, 0, 1);
-	generate_function(node, locals_size);
-	vector_resize(variables, globals_size); // Remove local vars
+	add_function_prototype(node);
+	if (node->child) // not extern
+	{
+		word globals_size = vector_size(variables);
+		scan_parameters(node);
+		word locals_size = scan_variables(node, 0, 1);
+		generate_function(node, locals_size);
+		vector_resize(variables, globals_size); // Remove local vars
+	}
 }
 
 byte generate_code(parse_node_func parse_node_, file_write_func fwf)
@@ -1110,7 +1277,7 @@ byte generate_code(parse_node_func parse_node_, file_write_func fwf)
 		case VAR:		add_variable(node); break;
 		case STRUCT:	add_struct(node);	break;
 		case FUN:		add_function(node);	break;
-		default: ERROR_RET(node->line);
+		default: ERROR_RET(node->line,UNSUPPORTED);
 		}
 		release_node(node); // Rolling generation, release completed nodes
 	}
@@ -1125,6 +1292,7 @@ void gen_init()
 	variables = vector_new(sizeof(Variable));
 	knowns = vector_new(sizeof(Address));
 	unknowns = vector_new(sizeof(Address));
+	function_prototypes = vector_new(sizeof(FunctionPrototype));
 }
 
 void gen_shut()
@@ -1141,6 +1309,13 @@ void gen_shut()
 		Struct* s=vector_access(structs,i);
 		vector_shut(s->fields);
 	}
+	n = vector_size(function_prototypes);
+	for (word i = 0; i < n; ++i)
+	{
+		FunctionPrototype* fp = vector_access(function_prototypes, i);
+		vector_shut(fp->parameters);
+	}
+	vector_shut(function_prototypes);
 	vector_shut(structs);
 }
 

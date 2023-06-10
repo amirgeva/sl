@@ -1,13 +1,14 @@
 #pragma once
 
 
-#define ROOT   00
+#define ROOT		0
 
-#define IDENT		01
-#define NUMBER		02
-#define EXTERN		05
-#define CONST		06
+#define IDENT		1
+#define NUMBER		2
+#define EXTERN		5
+#define CONST		6
 
+#define WFUN		9
 #define FUN			10
 #define VAR			11
 #define LPAREN		12
