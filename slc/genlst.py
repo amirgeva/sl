@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import os.path
+import shutil
 import sys
 from dataclasses import dataclass
 from typing import Dict, NewType, List
@@ -110,17 +112,24 @@ def generate_listing(source_code: List[str], line_offsets: Dict[Address, LineNum
 
 
 def main(source: str):
-    sp.run(['../buildu/slc', source])
-    code = read_text_file(source)
-    line_offsets = read_offsets('line_offsets.log')
-    binary = open('out.bin', 'rb').read()
-    res = sp.run('z80dasm -g 4096 -a out.bin'.split(), capture_output=True, encoding='ascii')
-    if res:
-        disassembly = res.stdout.split('\n')
-        generate_listing(code, line_offsets, disassembly, binary)
-    else:
-        print("Failed to disaassemble")
-
+    try:
+        res=sp.run(['../buildu/slc', source], capture_output=True, check=False)
+        if res.returncode!=0:
+            print(res.stdout.decode('ascii'))
+        else:
+            code = read_text_file(source)
+            line_offsets = read_offsets('line_offsets.log')
+            base = os.path.splitext(source)[0]
+            shutil.copyfile('out.bin',base+'.bin')
+            binary = open('out.bin', 'rb').read()
+            res = sp.run('z80dasm -g 4096 -a out.bin'.split(), capture_output=True, encoding='ascii')
+            if res:
+                disassembly = res.stdout.split('\n')
+                generate_listing(code, line_offsets, disassembly, binary)
+            else:
+                print("Failed to disaassemble")
+    except sp.CalledProcessError as e:
+        print(e)
 
 if __name__ == '__main__':
     argh.dispatch_command(main)
