@@ -2,6 +2,7 @@
 
 #include "types.h"
 #include "lexer.h"
+#include "vector.h"
 
 typedef byte (*token_func)(word index, Token* t);
 
@@ -24,6 +25,7 @@ struct node_
 	Node*		sibling;
 	Node*		child;
 	Node*		parameters;
+	Vector*		data;
 };
 
 void p_init(token_func f);

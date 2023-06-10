@@ -5,10 +5,21 @@
 
 #define CONTEXT_LIMIT 16
 
+#define ERROR_RET(msg)  return error_func(node, msg)
+//#define VERIFY(x,y) if (x!=y) ERROR_RET;
+#define NEXT_TOKEN { if (!get_token(cur_index++, &t)) ERROR_RET("No Token"); else line_number=t.line; }
+#define EXPECT(x) { NEXT_TOKEN; if (t.type != x) ERROR_RET("Expecting " #x); }
+#define EXPECT_IE(x) { do { NEXT_TOKEN; } while (t.type==EOL); if (t.type != x) ERROR_RET("Expecting " #x); }
 
-#define VERIFY(x,y) if (x!=y) ERROR_RET;
-#define NEXT_TOKEN { if (!get_token(cur_index++, &t)) ERROR_RET; else line_number=t.line; }
-#define EXPECT(x) { NEXT_TOKEN; if (t.type != x) ERROR_RET; }
+const char* RIGHT_OPERAND="Missing right operand";
+const char* BAD_EXPRESSION="Bad expression";
+const char* BAD_LVALUE="Bad lvalue";
+const char* BAD_VARIABLE="Bad variable definition";
+const char* INVALID_STATEMENT="Invalid statement";
+const char* MISSING_TOKEN="Missing token";
+const char* EXPECTING_PARAM="Expecting parameter";
+const char* EXPECT_COMMA="Expecting comma";
+const char* BAD_FUNCTION="Bad function";
 
 typedef struct constant_
 {
@@ -28,7 +39,7 @@ typedef struct context_
 	Node*	node;
 } Context;
 
-void error_exit(word line, int rc);
+void error_exit(word line, const char* msg, int rc);
 
 // Stack of block nodes: structs, functions, if / while blocks
 static Context context_stack[CONTEXT_LIMIT];
@@ -52,6 +63,7 @@ void init_node(Node* node, Node* parent)
 	node->data_type.sub_type = 0;
 	node->data_type.type_name = 0;
 	node->name = 0;
+	node->data = 0;
 	if (parent)
 		add_child(parent, node);
 }
@@ -71,18 +83,17 @@ void release_node(Node* node)
 	if (node->child) release_node(node->child);
 	if (node->sibling) release_node(node->sibling);
 	if (node->parameters) release_node(node->parameters);
+	if (node->data) vector_shut(node->data);
 	release(node);
 }
 
 
-Node* error_func(Node* node)
+Node* error_func(Node* node, const char* msg)
 {
-	error_exit(line_number,1);
+	error_exit(line_number,msg, 1);
 	if (node) release_node(node);
 	return 0;
 }
-
-#define ERROR_RET  return error_func(node)
 
 byte get_token(word index, Token* t)
 {
@@ -206,7 +217,7 @@ Node* parse_lvalue()
 		cur_index -= 2; // Undo ident and LPAREN
 		release_node(node);
 		node = parse_call();
-		if (!node) ERROR_RET;
+		if (!node) ERROR_RET("Failed to parse call");
 		return node;
 	}
 	while (1)
@@ -222,7 +233,7 @@ Node* parse_lvalue()
 			add_child(bracket_node, node);
 			node = bracket_node;
 			Node* index_node = parse_expression();
-			if (!index_node) ERROR_RET;
+			if (!index_node) ERROR_RET(BAD_EXPRESSION);
 			add_child(node, index_node);
 			EXPECT(RBRACKET);
 		}
@@ -256,7 +267,7 @@ Node* parse_expression()
 	{
 		node = allocate_node(LPAREN, 0);
 		Node* expr = parse_expression();
-		if (!expr) ERROR_RET;
+		if (!expr) ERROR_RET(BAD_EXPRESSION);
 		add_child(node, expr);
 		EXPECT(RPAREN);
 	}
@@ -276,7 +287,7 @@ Node* parse_expression()
 		Node* right = parse_expression();
 		if (right)
 			add_child(node, right);
-		else ERROR_RET;
+		else ERROR_RET(RIGHT_OPERAND);
 	}
 	else --cur_index;
 	return node;
@@ -291,13 +302,13 @@ Node* parse_condition()
 	{
 		node = allocate_node(LPAREN, 0);
 		Node* cond = parse_condition();
-		if (!cond) ERROR_RET;
+		if (!cond) ERROR_RET(BAD_EXPRESSION);
 		add_child(node, cond);
 		EXPECT(RPAREN);
 		return node;
 	}
 	--cur_index;
-	node=parse_value();
+	node=parse_expression();
 	if (!node) return 0;
 	NEXT_TOKEN;
 	if (t.type == GT || t.type == LT || t.type == GE || t.type == LE ||
@@ -306,10 +317,10 @@ Node* parse_condition()
 		Node* oper = allocate_node(t.type, 0);
 		add_child(oper, node);
 		node = oper;
-		Node* right = parse_value();
+		Node* right = parse_expression();
 		if (right)
 			add_child(node, right);
-		else ERROR_RET;
+		else ERROR_RET(RIGHT_OPERAND);
 	}
 	else --cur_index;
 	return node;
@@ -329,11 +340,11 @@ Node* parse_call()
 		if (t.type == RPAREN) return node;
 		if (param_count > 0)
 		{
-			if (t.type != COMMA) ERROR_RET;
+			if (t.type != COMMA) ERROR_RET("Missing comma");
 		}
 		else --cur_index;
 		Node* param = parse_expression();
-		if (!param) ERROR_RET;
+		if (!param) ERROR_RET(BAD_EXPRESSION);
 		add_parameter(node, param);
 		++param_count;
 	}
@@ -358,7 +369,7 @@ Node* parse_statement()
 	if (t.type == VAR)
 	{
 		node = parse_var();
-		if (!node) ERROR_RET;
+		if (!node) ERROR_RET(BAD_VARIABLE);
 	}
 	else
 	if (t.type == IDENT)
@@ -373,11 +384,11 @@ Node* parse_statement()
 		{
 			node = allocate_node(ASSIGN, 0);
 			Node* target = parse_lvalue();
-			if (!target) ERROR_RET;
+			if (!target) ERROR_RET(BAD_LVALUE);
 			add_child(node, target);
 			EXPECT(EQ);
 			Node* expr = parse_expression();
-			if (!expr) ERROR_RET;
+			if (!expr) ERROR_RET(BAD_EXPRESSION);
 			add_child(node, expr);
 		}
 	}
@@ -386,7 +397,7 @@ Node* parse_statement()
 	{
 		node = allocate_node(WHILE, 0);
 		Node* cond = parse_condition();
-		if (!cond) ERROR_RET;
+		if (!cond) ERROR_RET(BAD_EXPRESSION);
 		add_parameter(node, cond);
 		new_block = 1;
 	}
@@ -395,7 +406,7 @@ Node* parse_statement()
 	{
 		node = allocate_node(IF, 0);
 		Node* cond = parse_condition();
-		if (!cond) ERROR_RET;
+		if (!cond) ERROR_RET(BAD_EXPRESSION);
 		while (1)
 		{
 			NEXT_TOKEN;
@@ -409,19 +420,19 @@ Node* parse_statement()
 				Node* combined=allocate_node(t.type,0);
 				add_child(combined, cond);
 				cond = parse_condition();
-				if (!cond) ERROR_RET;
+				if (!cond) ERROR_RET(BAD_EXPRESSION);
 				add_child(combined, cond);
 				cond = combined;
 			}
 		}
-		if (!cond) ERROR_RET;
+		if (!cond) ERROR_RET(BAD_EXPRESSION);
 		add_parameter(node, cond);
 		new_block = 1;
 	}
 	else
 	if (t.type == ELSE)
 	{
-		if (cur_node->type != IF) ERROR_RET;
+		if (cur_node->type != IF) ERROR_RET("Else without if");
 		cur_node->type = IFELSE;
 		Node* true_side = allocate_node(BLOCK, 0);
 		true_side->child = cur_node->child;
@@ -437,7 +448,7 @@ Node* parse_statement()
 		pop_context();
 	}
 	else
-		ERROR_RET;
+		ERROR_RET(INVALID_STATEMENT);
 	EXPECT(EOL);
 	if (node)
 	{
@@ -460,21 +471,21 @@ Node* parse_fun()
 	while (1)
 	{
 		// Peek to see next token
-		if (!get_token(cur_index, &t)) ERROR_RET;
+		if (!get_token(cur_index, &t)) ERROR_RET(MISSING_TOKEN);
 		if (t.type == RPAREN) // No more parameters
 		{
 			++cur_index;
 			EXPECT(EOL);
 			return node;
 		}
-		if (t.type==EOL) ERROR_RET;
+		if (t.type==EOL) ERROR_RET(EXPECTING_PARAM);
 		if (param_count > 0)
 		{
-			if (t.type != COMMA) ERROR_RET;
+			if (t.type != COMMA) ERROR_RET(EXPECT_COMMA);
 			++cur_index;
 		}
 		Node* parameter = parse_var();
-		if (!parameter) ERROR_RET;
+		if (!parameter) ERROR_RET(BAD_VARIABLE);
 		add_parameter(node, parameter);
 		++param_count;
 	}
@@ -514,7 +525,7 @@ Node* parse_var()
 		node->data_type.sub_type = STRUCT;
 		node->data_type.type_name = t.value;
 	}
-	else ERROR_RET;
+	else ERROR_RET(BAD_VARIABLE);
 	EXPECT(IDENT);
 	node->name = t.value;
 	return node;
@@ -528,7 +539,7 @@ Node* parse_struct_var()
 	if (t.type == VAR)
 	{
 		node = parse_var();
-		if (!node) ERROR_RET;
+		if (!node) ERROR_RET(BAD_VARIABLE);
 		EXPECT(EOL);
 		add_child(cur_node, node);
 	}
@@ -538,11 +549,13 @@ Node* parse_struct_var()
 		EXPECT(EOL);
 		pop_context();
 	}
-	else ERROR_RET;
+	else ERROR_RET(BAD_VARIABLE);
 	return cur_node;
 }
 
 //#define ADD_CHILD(x) { Node* node=x(); if (node) add_child(cur_node, node); else { error=1; return 0; } }
+
+word type_size(word line, BaseType* base_type);
 
 Node* parse_global()
 {
@@ -550,22 +563,64 @@ Node* parse_global()
 	t.type = EOC;
 	Node* node = 0;
 	NEXT_TOKEN;
+	byte extrn = (t.type == EXTERN ? 1 : 0);
 	if (t.type == EOC) return 0;
 	if (t.type == EOL) return &root_node;
 	if (t.type == VAR) 
 	{
-		if (function_count>0) ERROR_RET;
+		//if (function_count>0) ERROR_RET;
 		node = parse_var();
-		if (!node) ERROR_RET;
+		if (!node) ERROR_RET(BAD_VARIABLE);
+		NEXT_TOKEN;
+		if (t.type == EQ)
+		{
+			if (node->data_type.type == ARRAY)
+			{
+				EXPECT_IE(LBRACKET);
+				word n=node->parameters->name;
+				byte elem_size=type_size(node->line, &node->data_type);
+				Vector* data = vector_new(elem_size);
+				vector_resize(data, n);
+				for (word i = 0; i < n; ++i)
+				{
+					EXPECT_IE(NUMBER);
+					vector_set(data, i, &t.value);
+					if (i < (n - 1))
+					{
+						EXPECT_IE(COMMA);
+					}
+				}
+				EXPECT_IE(RBRACKET);
+				node->data = data;
+			}
+			else
+			{
+				// Scalar
+				EXPECT(NUMBER);
+				Node* value = allocate_node(NUMBER, 0);
+				value->name = t.value;
+				add_parameter(node, value);
+			}
+		}
+		else --cur_index;
 		EXPECT(EOL);
 		add_child(cur_node, node);
 	}
-	else if (t.type == FUN)
+	else if (t.type == FUN || t.type == WFUN || extrn)
 	{
+		if (extrn)
+		{
+			NEXT_TOKEN;
+			if (t.type!=FUN && t.type!=WFUN) ERROR_RET(BAD_FUNCTION);
+		}
 		node = parse_fun();
-		if (!node) ERROR_RET;
+		if (!node) ERROR_RET(BAD_FUNCTION);
+		node->data_type.type = VAR;
+		node->data_type.sub_type = PRIMITIVE;
+		node->data_type.type_name = (t.type==FUN ? BYTE : WORD);
 		add_child(&root_node, node);
-		push_context(parse_statement, node);
+		if (!extrn)
+			push_context(parse_statement, node);
 	}
 	else if (t.type == STRUCT)
 	{
@@ -575,12 +630,6 @@ Node* parse_global()
 		EXPECT(EOL);
 		add_child(&root_node, node);
 		push_context(parse_struct_var, node);
-	}
-	else if (t.type == EXTERN)
-	{
-		EXPECT(FUN);
-		node = parse_fun();
-		add_child(cur_node, node);
 	}
 	else if (t.type == CONST)
 	{
