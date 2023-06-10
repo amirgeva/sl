@@ -100,6 +100,7 @@ static byte close_alpha_token(Token* t)
 	if (compare((const char*)buffer, "struct") == 0) { t->type = STRUCT; return 1; }
 	if (compare((const char*)buffer, "var") == 0) { t->type = VAR; return 1; }
 	if (compare((const char*)buffer, "fun") == 0) { t->type = FUN; return 1; }
+	if (compare((const char*)buffer, "wfun") == 0) { t->type = WFUN; return 1; }
 	if (compare((const char*)buffer, "end") == 0) { t->type = END; return 1; }
 	if (compare((const char*)buffer, "const") == 0) { t->type = CONST; return 1; }
 	if (compare((const char*)buffer, "extern") == 0) { t->type = EXTERN; return 1; }
