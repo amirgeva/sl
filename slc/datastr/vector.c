@@ -121,6 +121,20 @@ void*		vector_access(Vector* v, word index)
 	return v->data + multiply(index, v->element_size);
 }
 
+byte		vector_set(Vector* v, word index, void* element)
+{
+	if (v)
+	{
+		void* dst = vector_access(v, index);
+		if (element && dst)
+		{
+			copy(dst, element, v->element_size);
+			return 1;
+		}
+	}
+	return 0;
+}
+
 byte		vector_get(Vector* v, word index, void* element)
 {
 	if (!v) return 0;
