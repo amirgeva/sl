@@ -5,6 +5,18 @@ extern "C" {
 #include <utils.h>
 }
 
+struct Initializer
+{
+	Initializer()
+	{
+		alloc_init();
+	}
+	~Initializer()
+	{
+		alloc_shut();
+	}
+};
+
 void* null=0;
 
 TEST(memory, realloc)
@@ -36,6 +48,7 @@ TEST(memory, edge_cases)
 
 int main(int argc, char* argv[])
 {
+	Initializer init;
 	::testing::InitGoogleTest(&argc, argv);
 	return RUN_ALL_TESTS();
 }
