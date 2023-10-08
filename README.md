@@ -17,7 +17,7 @@ byte myarray[12];
 Note that until it encounters the left bracket, a parser of C cannot know it's an array.
 
 
-Current binary size of the compiler for a z80 is around 22KB  
+Current binary size of the compiler for a z80 is around 28KB  
 and requires several KBs of RAM for compiliing a typical source code file.
 
 There is still no integration with disk io to read files, so it is tested on a windows machine.
