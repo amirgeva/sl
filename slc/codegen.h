@@ -9,3 +9,5 @@ typedef byte (*file_write_func)(word offset, const byte* data, word length);
 byte generate_code(parse_node_func parse_node_, file_write_func fwf);
 void gen_init();
 void gen_shut();
+Vector* gen_get_functions();
+Vector* gen_get_unknowns();

@@ -5,6 +5,18 @@ extern "C" {
 #include <utils.h>
 }
 
+struct Initializer
+{
+	Initializer()
+	{
+		alloc_init();
+	}
+	~Initializer()
+	{
+		alloc_shut();
+	}
+};
+
 
 
 TEST(datastr, mult)
@@ -51,6 +63,7 @@ TEST(datastr, vector)
 
 int main(int argc, char* argv[])
 {
+	Initializer init;
 	::testing::InitGoogleTest(&argc, argv);
 	return RUN_ALL_TESTS();
 }

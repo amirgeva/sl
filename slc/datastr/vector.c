@@ -86,6 +86,13 @@ byte		vector_resize(Vector* v, word size)
 	return 1;
 }
 
+byte		vector_reserve(Vector* v, word size)
+{
+	if (!v) return 0;
+	if (size < v->capacity) return 1;
+	return vector_reallocate(v, size);
+}
+
 byte		vector_push(Vector* v, void* element)
 {
 	if (!v) return 0;

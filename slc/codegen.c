@@ -2,10 +2,13 @@
 #include <parser.h>
 #include <vector.h>
 #include <strhash.h>
+#include "optimizer.h"
+#include "services.h"
 
 const char* UNKNOWN_TYPE   = "Unknown type";
 const char* UNKNOWN_STRUCT = "Unknown struct";
 const char* INVALID_TYPE   = "Invalid type";
+const char* OUT_OF_BOUNDS = "Out of bounds";
 const char* UNKNOWN_FUNCTION = "Unknown function";
 const char* UNKNOWN_VAR = "Unknown variable";
 const char* INVALID_SIZE = "Invalid Size";
@@ -27,6 +30,8 @@ void exit(int rc) { (void)rc; }
 #include <dev.h>
 #endif
 
+#define POINTER_SIZE sizeof(word)
+
 void error_exit(word line, const char* msg, int rc)
 {
 #ifdef DEV
@@ -40,7 +45,8 @@ typedef enum data_location_
 	IMMEDIATE = 1,	// Value is known in compile time
 	A=2,			// Value is a byte stored in A
 	HL=3,			// Value is a word (not address), stored in HL
-	STACK=4			// Value is an address (array / struct) pushed to stack
+	STACK=4,		// Value is an address (array / struct) pushed to stack
+	GLOBAL=5		// Value is an address stored in HL
 } DataLocation;
 
 typedef struct data_type_
@@ -72,7 +78,7 @@ typedef struct struct_
 typedef struct variable_
 {
 	// For global variables, address is absolute
-	// For local variables, address is relative to stack pointer at entry
+	// For local variables, address is relative to stack frame pointer at entry
 	word		name;
 	word		address;
 	word		size;
@@ -97,6 +103,7 @@ static Vector* structs;
 static Vector* variables;
 static Vector* knowns;
 static Vector* unknowns;
+static Vector* function_addresses;
 static Vector* function_prototypes;
 static parse_node_func parse_node;
 static file_write_func raw_write=0;
@@ -107,18 +114,34 @@ static Node* function_node=0;
 #ifdef DEV
 #include <stdio.h>
 FILE* line_offsets_file = 0;
+FILE* abs_addr_file = 0;
 void close_line_offsets()
 {
-	fclose(line_offsets_file);
+	if (line_offsets_file)
+		fclose(line_offsets_file);
 }
 void write_offset_line(word line)
 {
 	if (!line_offsets_file)
 		line_offsets_file = fopen("line_offsets.log", "w");
-	fprintf(line_offsets_file,"%hd %hd\n",line,0x1000+write_offset);
+	fprintf(line_offsets_file,"%hx %hx\n",line,0x1000+write_offset);
+}
+void close_abs_addr()
+{
+	if (abs_addr_file)
+		fclose(abs_addr_file);
+}
+void save_unknown_address(word addr)
+{
+	if (!abs_addr_file)
+		abs_addr_file=fopen("abs_addr.bin","wb");
+	fwrite(&addr,2,1,abs_addr_file);
 }
 #else
 void write_offset_line(word line) {}
+void save_unknown_address(word addr) {}
+void close_abs_addr() {}
+void close_line_offsets() {}
 #endif
 
 
@@ -177,10 +200,6 @@ void write_byte(byte b) { write(&b, 1); }
 #define and_c	write_byte(0xA1)
 #define or_c	write_byte(0xB1)
 #define xor_c	write_byte(0xA9)
-//const byte lsh_c_cmd[] = { 0xCB, 0x21 };
-//#define lsh_c MULTI_BYTE_CMD(lsh_c)
-//const byte rsh_c_cmd[] = { 0xCB, 0x39 };
-//#define rsh_c MULTI_BYTE_CMD(rsh_c)
 const byte lsh_hl_cmd[] = { 0xCB, 0x25, 0xCB, 0x14 };
 #define lsh_hl MULTI_BYTE_CMD(lsh_hl)
 
@@ -188,6 +207,7 @@ const byte lsh_hl_cmd[] = { 0xCB, 0x25, 0xCB, 0x14 };
 #define push_hl		write_byte(0xE5)
 const byte push_ix_cmd[] = { 0xDD,0xE5 };
 #define push_ix		WRITE(push_ix_cmd)
+#define push_bc		write_byte(0xC5)
 #define pop_af		write_byte(0xF1)
 #define pop_hl		write_byte(0xE1)
 #define pop_bc		write_byte(0xC1)
@@ -339,7 +359,7 @@ word struct_size(word line, word name)
 
 // Given a struct name and field name, calculate the relative term.
 // If successful, returns an immediate term relative to the start of the struct
-void struct_field_offset(word line, word struct_name, word field_name, Term* res)
+void struct_field_offset(word line, word struct_name, word field_name, Term* res, word* length)
 {
 	res->location = IMMEDIATE;
 	res->immediate = 0;
@@ -353,6 +373,8 @@ void struct_field_offset(word line, word struct_name, word field_name, Term* res
 		{
 			res->immediate=offset;
 			res->type.base_type = field->type;
+			if (length && field->type.type == ARRAY)
+				*length = field->length;
 			break;
 		}
 		offset += field->length * type_size(line, &field->type);
@@ -364,9 +386,12 @@ word var_size(Node* node)
 	if (node->data_type.type == VAR)
 		return type_size(node->line, &node->data_type);
 	else
-	if (node->data_type.type == ARRAY && node->parameters)
+	if (node->data_type.type == ARRAY)
 	{
-		return node->parameters->name * type_size(node->line, &node->data_type);
+		if (node->parameters)
+			return node->parameters->name * type_size(node->line, &node->data_type);
+		//return POINTER_SIZE;
+		return 0; // Pointer
 	}
 	else ERROR_RET(node->line,INVALID_TYPE);
 	return 0;
@@ -431,19 +456,22 @@ word scan_variables(Node* node, word offset, byte local)
 			var.name = child->name;
 			var.type.local = local;
 			var.size = var_size(child);
+			word effective_size = var.size;
+			if (effective_size == 0)
+				effective_size = POINTER_SIZE;
 			var.type.base_type = child->data_type;
 			if (local)
 			{
-				offset -= var.size;
+				offset -= effective_size;
 				var.address = offset;
 			}
 			else
 			{
 				var.address = offset;
-				offset += var.size;
+				offset += effective_size;
 			}
 			vector_push(variables, &var);
-			sum += var_size(child);
+			sum += effective_size;
 		}
 		else
 		if (child->type == WHILE || child->type == IF || child->type == IFELSE || child->type==BLOCK)
@@ -521,7 +549,7 @@ void set_prim_type(BaseType* t, byte type_name)
 	t->type_name = type_name;
 }
 
-void get_node_address(Node* node, Term*);
+void get_node_address(Node* node, Term*, word* length);
 
 void calculate_expression(Node* node, Term* res)
 {
@@ -615,7 +643,8 @@ void calculate_expression(Node* node, Term* res)
 	}
 	else if (node->type == DOT || node->type == INDEX)
 	{
-		get_node_address(node, res);
+		word length=0;
+		get_node_address(node, res, &length);
 		pop_hl;
 		if (res->type.local)
 		{
@@ -735,7 +764,7 @@ void multiply_hl(word line, word m)
 // Input:  node of address to evaluate
 // Outputs:
 //		Term - Location on STACK
-void get_node_address(Node* node, Term* res)
+void get_node_address(Node* node, Term* res, word* length)
 {
 	res->location = STACK;
 	res->immediate = 0;
@@ -745,7 +774,9 @@ void get_node_address(Node* node, Term* res)
 		if (find_variable(node->name, &var))
 		{
 			res->type = var.type;
-			if (var.type.local && var.address<0x100 && 
+			if (length && var.type.base_type.type == ARRAY && var.size>0)
+				*length = var.size;
+			if (var.type.local && var.address<0x100 &&
 				(var.type.base_type.type == ARRAY || var.type.base_type.sub_type == STRUCT))
 			{
 				// variable is a local parameter pointer.  Load its actual address
@@ -754,7 +785,22 @@ void get_node_address(Node* node, Term* res)
 				res->type.local=0;
 			}
 			else
+			{
 				ld_hl_immed(var.address);
+				if (var.size == 0) // Array Pointer on stack (load the pointer)
+				{
+					res->location = GLOBAL;
+					res->type.local = 0;
+					push_ix;
+					pop_bc;
+					add_hl_bc;
+					ld_c_mem_hl;
+					inc_hl;
+					ld_b_mem_hl;
+					push_bc;
+					pop_hl;
+				}
+			}
 			push_hl;
 		}
 		else
@@ -763,18 +809,27 @@ void get_node_address(Node* node, Term* res)
 	else if (node->type == INDEX)
 	{
 		Term array_address;
-		get_node_address(node->child,&array_address);
+		get_node_address(node->child,&array_address,length);
 		if (array_address.type.base_type.type != ARRAY) ERROR_RET(node->line,INVALID_TYPE);
 		word elem_size = type_size(node->line, &array_address.type.base_type);
 		Term index;
 		calculate_expression(node->child->sibling,&index);
 		if (index.location == IMMEDIATE)
 		{
+			if (length && *length>0 && index.immediate >= *length)
+				ERROR_RET(node->line, OUT_OF_BOUNDS);
 			set_hl_immed(index.immediate * elem_size);
 		}
 		else
 		{
 			set_hl_res(node->line, &index);
+			if (length)
+			{
+				set_de_immed(*length);
+				word addr = get_known_address(node->line, sh_get("bounds_check"));
+				const byte cmd[] = { 0xCD, (addr & 0xFF), (addr >> 8) };
+				WRITE(cmd);
+			}
 			if (elem_size>1)
 				multiply_hl(node->line, elem_size);
 		}
@@ -794,11 +849,11 @@ void get_node_address(Node* node, Term* res)
 	else if (node->type == DOT)
 	{
 		Term struct_addr;
-		get_node_address(node->child,&struct_addr);
+		get_node_address(node->child,&struct_addr,0);
 		if (struct_addr.type.base_type.sub_type != STRUCT) ERROR_RET(node->line,INVALID_TYPE);
 		Node* field_node = node->child->sibling;
 		Term field;
-		struct_field_offset(node->line, struct_addr.type.base_type.type_name, field_node->name, &field);
+		struct_field_offset(node->line, struct_addr.type.base_type.type_name, field_node->name, &field, length);
 		if (field.location != IMMEDIATE) ERROR_RET(node->line,EXPECT_IMMED);
 		res->type.local = struct_addr.type.local;
 		res->type.base_type = field.type.base_type;
@@ -871,7 +926,8 @@ void generate_assignment(Node* node)
 {
 	Node* target_node = node->child;
 	Term target_term, source_term;
-	get_node_address(target_node,&target_term);
+	word length=0;
+	get_node_address(target_node,&target_term,&length);
 	word target_size = type_size(node->line, &target_term.type.base_type);
 	Node* expr_node = target_node->sibling;
 	calculate_expression(expr_node,&source_term);
@@ -1069,10 +1125,12 @@ void generate_block(Node* block)
 // Returns the offset beyond the function
 void generate_function(Node* func, word locals_size)
 {
+	FunctionAddress fa;
 	function_end = sh_temp();
 	function_node = func;
 	write_offset_line(func->line);
 	add_known_address(func->name,write_offset);
+	fa.start=write_offset;
 	word neg_locals = -locals_size;
 	byte init_stack[] = {
 		0xDD, 0xE5,								// PUSH IX
@@ -1091,6 +1149,8 @@ void generate_function(Node* func, word locals_size)
 	generate_block(func);
 	add_known_address(function_end,write_offset);
 	WRITE(close_stack);
+	fa.stop=write_offset;
+	vector_push(function_addresses, &fa);
 }
 
 // Common functions only accept and return primitives
@@ -1138,31 +1198,38 @@ vector_push(knowns, &address); const byte code_bytes[] = __VA_ARGS__; WRITE(code
 				{ 0xE1,   0xC1,   0xD1,   0xD5,     0xC5,    0xE5,    0xC3, mult_offset, 0x10 });
 	
 	// OS Service, send block to GPU
-	//                         pop bc  pop hl  push hl  push bc    ld a,8    RST 1  ret
-	COMMON_FUNC("gpu_block", "BP", { 0xC1, 0xE1, 0xE5, 0xC5, 0x3E, 0x08, 0xCF, 0xC9 });
+	//                               pop bc  pop hl  push hl  push bc    ld a,service              RST 1  ret
+	COMMON_FUNC("gpu_block", "BP", { 0xC1,   0xE1,   0xE5,    0xC5,      0x3E, SERVICE_GPU_BLOCK,  0xCF,  0xC9 });
+
+	// OS Service, flush GPU
+	//                              ld a,service     RST 1   ret
+	COMMON_FUNC("gpu_flush", "B", { 0x3E, SERVICE_GPU_FLUSH, 0xCF,   0xC9 });
 
 	// OS Service, rng
-	//                          ld a,7    RST 1  ret
-	COMMON_FUNC("rng", "W", { 0x3E, 0x07, 0xCF, 0xC9 });
+	//                        ld a,service       RST 1  ret
+	COMMON_FUNC("rng", "W", { 0x3E, SERVICE_RNG, 0xCF, 0xC9 });
 
-	//                            ld a,9    RST 1  ret
-	COMMON_FUNC("timer", "W", { 0x3E, 0x09, 0xCF, 0xC9});
+	//                          ld a,service         RST 1  ret
+	COMMON_FUNC("timer", "W", { 0x3E, SERVICE_TIMER, 0xCF, 0xC9});
 
 	// OS Service, cls
-	//                     ld a,0    RST 1  ret
-	COMMON_FUNC("cls", "B", { 0x3E, 0x00, 0xCF, 0xC9 });
+	//                        ld a,service       RST 1  ret
+	COMMON_FUNC("cls", "B", { 0x3E, SERVICE_CLS, 0xCF, 0xC9 });
 
-	//							    A = 3    RST   RET
-	COMMON_FUNC("input_empty", "B", { 0x3E, 0x03, 0xCF, 0xC9 });
+	//							      ld a,service               RST   RET
+	COMMON_FUNC("input_empty", "B", { 0x3E, SERVICE_INPUT_EMPTY, 0xCF, 0xC9 });
 
-	//                             A = 4    RST   RET
-	COMMON_FUNC("input_read", "B", { 0x3E, 0x04, 0xCF, 0xC9 });
+	//                               ld a,service              RST   RET
+	COMMON_FUNC("input_read", "B", { 0x3E, SERVICE_INPUT_READ, 0xCF, 0xC9 });
 
 	//                        pop hl  pop af  push af  jp (hl)
-	COMMON_FUNC("highbyte", "BW", { 0xE1, 0xF1, 0xF5, 0xE9 });
+	//COMMON_FUNC("highbyte", "BW", { 0xE1, 0xF1, 0xF5, 0xE9 });
 
 	//                       pop hl  pop bc  push bc  ld a,c  jp (hl)
-	COMMON_FUNC("lowbyte", "BW", { 0xE1, 0xC1, 0xC5, 0x79, 0xE9 });
+	//COMMON_FUNC("lowbyte", "BW", { 0xE1, 0xC1, 0xC5, 0x79, 0xE9 });
+
+	//                                 LD A,service                RST   RET
+	COMMON_FUNC("bounds_check", "B", { 0x3E, SERVICE_BOUNDS_CHECK, 0xCF, 0xC9 });
 
 #undef COMMON_FUNC
 }
@@ -1292,14 +1359,27 @@ void gen_init()
 	variables = vector_new(sizeof(Variable));
 	knowns = vector_new(sizeof(Address));
 	unknowns = vector_new(sizeof(Address));
+	function_addresses = vector_new(sizeof(FunctionAddress));
 	function_prototypes = vector_new(sizeof(FunctionPrototype));
+}
+
+Vector* gen_get_functions()
+{
+	return function_addresses;
+}
+
+Vector* gen_get_unknowns()
+{
+	return unknowns;
 }
 
 void gen_shut()
 {
 #ifdef DEV
 	close_line_offsets();
+	close_abs_addr();
 #endif
+	vector_shut(function_addresses);
 	vector_shut(unknowns);
 	vector_shut(knowns);
 	vector_shut(variables);

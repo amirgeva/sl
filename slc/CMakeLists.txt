@@ -29,6 +29,8 @@ add_library(parser STATIC parser.c parser.h)
 add_library(codegen STATIC codegen.c codegen.h)
 add_executable(slc main.c)
 target_link_libraries(slc codegen dev lexer parser datastr utils)
+add_executable(optimizer optimizer.c optimizer.h)
+target_link_libraries(optimizer dev datastr utils)
 
 add_subdirectory(datastr)
 add_subdirectory(utils)

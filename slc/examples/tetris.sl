@@ -35,10 +35,10 @@ fun pixel_cursor(word x, word y)
 	var array 6 byte cmd
 	cmd[0] = 5
 	cmd[1] = 5
-	cmd[2] = lowbyte(x)
-	cmd[3] = highbyte(x)
-	cmd[4] = lowbyte(y)
-	cmd[5] = highbyte(y)
+	cmd[2] = x
+	cmd[3] = x>>8
+	cmd[4] = y
+	cmd[5] = y>>8
 	gpu_block(cmd)
 end
 
@@ -56,13 +56,19 @@ fun init_cubes()
 	# 2 command bytes and 2 length bytes
 	# We'll split it into 2 buffers
 	var array 5 byte header
+	var array 4 byte dot
+	pixel_cursor(0,32)
+	dot[0]=3
+	dot[1]=30
+	dot[2]=1
+	dot[3]=35
 	header[0]=4
 	header[1]=40 # set sprite command
 	var array 256 byte color
 	color[0]=254
 	var byte i
 	i=0
-	while i<64
+	while i<255
 		header[2]=i # sprite id
 		header[3]=i # sprite color
 		header[4]=i # sprite color
@@ -72,8 +78,10 @@ fun init_cubes()
 			j=j+1
 			color[j]=i
 		end
+		gpu_block(dot)
 		gpu_block(header)
 		gpu_block(color)
+		gpu_flush()
 		i=i+1
 	end
 end
@@ -128,7 +136,7 @@ fun remove_full(Board board)
 	var byte count
 	var byte x
 	full_rows=0
-	ofs = 161  # (H-1)*W
+	ofs = 165  # (H-1)*W
 	y=H-1
 	while y>0
 		count=0
@@ -183,6 +191,7 @@ fun remove_full(Board board)
 				ofs=ofs+1
 			end
 			y=y+1
+			#gpu_flush()
 		end
 	end
 end
@@ -211,24 +220,25 @@ fun gen_piece(Board board, Piece piece)
 	var byte i
 	var byte type
 	var byte base
+	type = 7
 	piece.cx=5
 	piece.cy=2
-	type = lowbyte(rng()) & 7
-	if type<7
-		base = type << 3
-		i=0
-		while i<8
-			piece.offsets[i]=offsets[base+i]
-			i=i+1
-		end
-		piece.color=type+1
-		piece.valid=1
-		if move_piece(board, piece, 0, 0)=0
-			board.game_over=1
-		end
-		return 1
+	while type=7
+		type = rng()
+		type = type & 7
 	end
-	return 0
+	base = type << 3
+	i=0
+	while i<8
+		piece.offsets[i]=offsets[base+i]
+		i=i+1
+	end
+	piece.color=((type+1)<<5) + (type << 1) + ((type+3) << 3)
+	piece.valid=1
+	if move_piece(board, piece, 0, 0)=0
+		board.game_over=1
+	end
+	return 1
 end
 
 fun draw_piece(Piece piece, byte erase)
@@ -331,6 +341,7 @@ fun draw_frame()
 		wx=wx+16
 		x=x+1
 	end
+	gpu_flush()
 end
 
 
@@ -347,6 +358,7 @@ fun main()
 	var word last_timer
 	last_timer=0
 	while 1>0
+		gpu_flush()
 		if piece.valid=0
 			while gen_piece(board, piece)=0
 			end

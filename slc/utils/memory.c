@@ -121,7 +121,8 @@ void* allocate(word size)
 	}
 	word offset= get_offset(best_free_block);
 #ifdef DEV
-	fprintf(logfile,"A %hd %hd\n",size,offset);
+	if (logfile)
+		fprintf(logfile,"A %hd %hd\n",size,offset);
 #endif
 	return header + 1;
 }
@@ -186,7 +187,8 @@ void	release(void* ptr)
 	word* header = (word*)ptr;
 	--header;
 #ifdef DEV
-	fprintf(logfile,"R %hd %hd\n",header[0],get_offset(header));
+	if (logfile)
+		fprintf(logfile,"R %hd %hd\n",header[0],get_offset(header));
 #endif
 	word size=*header;
 	total_allocated -= size;

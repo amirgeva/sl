@@ -19,7 +19,7 @@ def read_text_file(filename: str) -> List[str]:
 def read_offsets(filename: str) -> Dict[Address, LineNumber]:
     res = {}
     for line in open(filename).readlines():
-        values = [int(x) for x in line.strip().split()]
+        values = [int(x, 16) for x in line.strip().split()]
         res[Address(values[1])] = LineNumber(values[0])
     return res
 
@@ -97,8 +97,8 @@ def generate_listing(source_code: List[str], line_offsets: Dict[Address, LineNum
         if code_line.source_code:
             print(f'{"-" * 50}')
             prefix = f'Line {code_line.source_line}'
-            if len(prefix)<24:
-                prefix=prefix+' '*(24-len(prefix))
+            if len(prefix) < 24:
+                prefix = prefix + ' ' * (24 - len(prefix))
             print(f"{prefix}{code_line.source_code.strip()}")
         if code_line.address >= 0:
             sys.stdout.write(hexstr(code_line.address, 4))
@@ -113,14 +113,14 @@ def generate_listing(source_code: List[str], line_offsets: Dict[Address, LineNum
 
 def main(source: str):
     try:
-        res=sp.run(['../buildu/slc', source], capture_output=True, check=False)
-        if res.returncode!=0:
+        res = sp.run(['../buildu/slc', source], capture_output=True, check=False)
+        if res.returncode != 0:
             print(res.stdout.decode('ascii'))
         else:
             code = read_text_file(source)
             line_offsets = read_offsets('line_offsets.log')
             base = os.path.splitext(source)[0]
-            shutil.copyfile('out.bin',base+'.bin')
+            shutil.copyfile('out.bin', base + '.bin')
             binary = open('out.bin', 'rb').read()
             res = sp.run('z80dasm -g 4096 -a out.bin'.split(), capture_output=True, encoding='ascii')
             if res:
@@ -130,6 +130,7 @@ def main(source: str):
                 print("Failed to disaassemble")
     except sp.CalledProcessError as e:
         print(e)
+
 
 if __name__ == '__main__':
     argh.dispatch_command(main)

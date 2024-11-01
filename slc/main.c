@@ -8,6 +8,7 @@
 #include "parser.h"
 #include "codegen.h"
 #include "dev.h"
+#include "optimizer.h"
 
 char program_filename[32];
 
@@ -126,6 +127,11 @@ int main(int argc, char* argv[])
 	//dev_print_tree(p_root());
 	generate_code(p_parse, write_output);
 	close_output();
+/*
+	opt_init(gen_get_functions(), gen_get_unknowns());
+	opt_exec("out.bin");
+	opt_shut();
+*/
 	gen_shut();
 	p_shut();
 	lex_shut();

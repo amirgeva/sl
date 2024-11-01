@@ -10,6 +10,7 @@ byte		vector_init(Vector*, word element_size);
 word		vector_size(Vector*);
 byte		vector_clear(Vector*);
 byte		vector_resize(Vector*, word size);
+byte		vector_reserve(Vector*, word size);
 byte		vector_push(Vector*, void* element);
 byte		vector_pop(Vector*, void* element);
 byte		vector_set(Vector* v, word index, void* element);
