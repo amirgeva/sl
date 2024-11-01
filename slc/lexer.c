@@ -2,6 +2,8 @@
 #include <strhash.h>
 #include "vector.h"
 
+extern StrHash* texts;
+
 #define INITIAL 0
 #define ALPHA   1
 #define NUMERIC 2
@@ -106,7 +108,7 @@ static byte close_alpha_token(Token* t)
 	if (compare((const char*)buffer, "extern") == 0) { t->type = EXTERN; return 1; }
 	if (compare((const char*)buffer, "return") == 0) { t->type = RETURN; return 1; }
 	t->type = IDENT;
-	t->value = sh_get((const char*)buffer);
+	t->value = sh_get(texts, (const char*)buffer);
 	return 1;
 }
 

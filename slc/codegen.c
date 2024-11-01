@@ -5,6 +5,8 @@
 #include "optimizer.h"
 #include "services.h"
 
+extern StrHash* texts;
+
 const char* UNKNOWN_TYPE   = "Unknown type";
 const char* UNKNOWN_STRUCT = "Unknown struct";
 const char* INVALID_TYPE   = "Invalid type";
@@ -99,6 +101,7 @@ typedef struct function_prototype_
 } FunctionPrototype;
 
 static byte error=0;
+static byte bounds_checker_active = 0;
 static Vector* structs;
 static Vector* variables;
 static Vector* knowns;
@@ -155,7 +158,7 @@ word get_known_address(word line, word name)
 			return a->address + 0x1000; // Add OS size offset
 	}
 	char buf[32];
-	sh_text(buf,name);
+	sh_text(texts, buf,name);
 #ifdef DEV
 	strcat(buf," missing");
 	//printf("Missing symbol %s\n",buf);
@@ -754,7 +757,7 @@ void multiply_hl(word line, word m)
 	default:
 		set_bc_hl;
 		set_de_immed(m);
-		word addr = get_known_address(line, sh_get("mult_bc_de"));
+		word addr = get_known_address(line, sh_get(texts, "mult_bc_de"));
 		const byte cmd[] = { 0xCD, (addr & 0xFF), (addr >> 8) };
 		WRITE(cmd);
 	}
@@ -823,10 +826,10 @@ void get_node_address(Node* node, Term* res, word* length)
 		else
 		{
 			set_hl_res(node->line, &index);
-			if (length)
+			if (length && bounds_checker_active)
 			{
 				set_de_immed(*length);
-				word addr = get_known_address(node->line, sh_get("bounds_check"));
+				word addr = get_known_address(node->line, sh_get(texts, "bounds_check"));
 				const byte cmd[] = { 0xCD, (addr & 0xFF), (addr >> 8) };
 				WRITE(cmd);
 			}
@@ -967,7 +970,7 @@ byte generate_condition(Node* node)
 	if (node->type == PIPE)
 	{
 		byte b = generate_condition(node->child);
-		word success_end = sh_temp();
+		word success_end = sh_temp(texts);
 		add_unknown_address(success_end, write_offset+3);
 		const byte left_cmd[] = { invert_condition(b), 0x03, 0xC3, 0x00, 0x00 };
 		WRITE(left_cmd);
@@ -984,7 +987,7 @@ byte generate_condition(Node* node)
 	if (node->type == AMP)
 	{
 		byte b = generate_condition(node->child);
-		word failure_end = sh_temp();
+		word failure_end = sh_temp(texts);
 		add_unknown_address(failure_end, write_offset + 3);
 		const byte left_cmd[] = { b, 0x03, 0xC3, 0x00, 0x00 };
 		WRITE(left_cmd);
@@ -1045,7 +1048,7 @@ void generate_cond_block(Node* node, byte loop)
 	if (!node->parameters) ERROR_RET(node->line,MISSING_NODE);
 	word start_addr = write_offset+0x1000;
 	byte jump = generate_condition(node->parameters);
-	word end_of_block = sh_temp();
+	word end_of_block = sh_temp(texts);
 	add_unknown_address(end_of_block, write_offset + 3);
 	const byte cmd[] = { jump, 0x03, 0xC3, 0x00, 0x00 };
 	WRITE(cmd);
@@ -1062,12 +1065,12 @@ void generate_ifelse(Node* node)
 {
 	if (!node->parameters) ERROR_RET(node->line,MISSING_NODE);
 	byte jump = generate_condition(node->parameters);
-	word end_of_true = sh_temp();
+	word end_of_true = sh_temp(texts);
 	add_unknown_address(end_of_true, write_offset + 3);
 	const byte true_cmd[] = { jump, 0x03, 0xC3, 0x00, 0x00 };
 	WRITE(true_cmd);
 	generate_block(node->child); // True side of if-else
-	word end_of_else = sh_temp();
+	word end_of_else = sh_temp(texts);
 	add_unknown_address(end_of_else, write_offset+1);
 	const byte jump_to_end[] = { 0xC3, 0x00, 0x00 };
 	WRITE(jump_to_end);
@@ -1126,7 +1129,7 @@ void generate_block(Node* block)
 void generate_function(Node* func, word locals_size)
 {
 	FunctionAddress fa;
-	function_end = sh_temp();
+	function_end = sh_temp(texts);
 	function_node = func;
 	write_offset_line(func->line);
 	add_known_address(func->name,write_offset);
@@ -1184,7 +1187,7 @@ void add_common_prototype(word name, const char* proto)
 void generate_common_functions()
 {
 #define COMMON_FUNC(func_name,proto,...) {\
-Address address; address.name=sh_get(func_name); address.address=write_offset;\
+Address address; address.name=sh_get(texts, func_name); address.address=write_offset;\
 add_common_prototype(address.name,proto);\
 vector_push(knowns, &address); const byte code_bytes[] = __VA_ARGS__; WRITE(code_bytes); }
 
@@ -1333,7 +1336,7 @@ byte generate_code(parse_node_func parse_node_, file_write_func fwf)
 
 	byte header[] = { 0xC3, 0x00, 0x00 };
 	WRITE(header);
-	add_unknown_address(sh_get("main"), 1);
+	add_unknown_address(sh_get(texts, "main"), 1);
 	generate_common_functions();
 	while (1)
 	{

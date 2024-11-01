@@ -42,12 +42,18 @@ typedef struct text_node
 
 typedef TextNode* TextNodePtr;
 
-static TextNodePtr Root[256];
-static word LastID = 0;
-
-static word allocate_id()
+struct str_hash_
 {
-	return ++LastID;
+	TextNodePtr Root[256];
+	word		LastID;
+};
+
+//static TextNodePtr Root[256];
+//static word LastID = 0;
+
+static word allocate_id(StrHash* sh)
+{
+	return ++sh->LastID;
 }
 
 static void destroy_node(TextNodePtr ptr)
@@ -57,26 +63,29 @@ static void destroy_node(TextNodePtr ptr)
 	release(ptr);
 }
 
-void sh_init()
+StrHash* sh_init()
 {
-	LastID = 0;
+	StrHash* sh = (StrHash*)allocate(sizeof(StrHash));
+	sh->LastID = 0;
 	for (word i = 0; i < 256; ++i)
-		Root[i] = 0;
+		sh->Root[i] = 0;
+	return sh;
 }
 
-void sh_shut()
+void sh_shut(StrHash* sh)
 {
 	for (word i = 0; i < 256; ++i)
 	{
-		destroy_node(Root[i]);
-		Root[i] = 0;
+		destroy_node(sh->Root[i]);
+		sh->Root[i] = 0;
 	}
+	release(sh);
 }
 
-word sh_get(const char* text)
+word sh_get(StrHash* sh, const char* text)
 {
 	byte sum = checksum(text);
-	TextNodePtr next = Root[sum];
+	TextNodePtr next = sh->Root[sum];
 	if (next)
 	{
 		for (TextNodePtr cur = next; cur; cur = cur->next)
@@ -84,21 +93,21 @@ word sh_get(const char* text)
 			if (compare_n(text, cur->text, MAX_LENGTH) == 0) return cur->id;
 		}
 	}
-	Root[sum] = allocate(sizeof(TextNode));
-	Root[sum]->id = allocate_id();
-	copy_n(Root[sum]->text, text, MAX_LENGTH);
-	Root[sum]->next = next;
-	return Root[sum]->id;
+	sh->Root[sum] = allocate(sizeof(TextNode));
+	sh->Root[sum]->id = allocate_id(sh);
+	copy_n(sh->Root[sum]->text, text, MAX_LENGTH);
+	sh->Root[sum]->next = next;
+	return sh->Root[sum]->id;
 }
 
-byte sh_text(char* text, word sh)
+byte sh_text(StrHash* sh, char* text, word id)
 {
 	for (word i = 0; i < 256; ++i)
 	{
-		TextNodePtr ptr = Root[i];
+		TextNodePtr ptr = sh->Root[i];
 		while (ptr)
 		{
-			if (ptr->id == sh)
+			if (ptr->id == id)
 			{
 				copy_n(text, ptr->text, MAX_LENGTH);
 				return 1;
@@ -109,7 +118,7 @@ byte sh_text(char* text, word sh)
 	return 0;
 }
 
-word sh_temp()
+word sh_temp(StrHash* sh)
 {
-	return allocate_id();
+	return allocate_id(sh);
 }

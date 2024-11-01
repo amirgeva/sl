@@ -2,8 +2,19 @@
 
 #include "types.h"
 
-void sh_init();
-void sh_shut();
-word sh_get(const char* text);
-word sh_temp();
-byte sh_text(char* text, word sh);
+typedef struct str_hash_ StrHash;
+
+// Create a text hash database
+StrHash* sh_init();
+
+// Destroy
+void sh_shut(StrHash* sh);
+
+// Given a text string, get its hash value
+word sh_get(StrHash* sh, const char* text);
+
+// Get an generated hash value (no text associated)
+word sh_temp(StrHash* sh);
+
+// Retrieve the text associated with a hash
+byte sh_text(StrHash* sh, char* text, word hash);

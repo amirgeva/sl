@@ -1,6 +1,8 @@
 #include "dev.h"
 #include "datastr/strhash.h"
 
+extern StrHash* texts;
+
 #ifdef DEV
 
 #include <stdio.h>
@@ -35,7 +37,7 @@ void print_name(word id)
 {
 	char name[20];
 	name[16] = 0;
-	sh_text(name, id);
+	sh_text(texts, name, id);
 	fprintf(output,"%s", name);
 }
 

@@ -113,7 +113,7 @@ def generate_listing(source_code: List[str], line_offsets: Dict[Address, LineNum
 
 def main(source: str):
     try:
-        res = sp.run(['../buildu/slc', source], capture_output=True, check=False)
+        res = sp.run(['slc', source], capture_output=True, check=False)
         if res.returncode != 0:
             print(res.stdout.decode('ascii'))
         else:

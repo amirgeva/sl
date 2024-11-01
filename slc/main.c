@@ -10,6 +10,7 @@
 #include "dev.h"
 #include "optimizer.h"
 
+StrHash* texts;
 char program_filename[32];
 
 #ifdef CODE_FILE
@@ -119,7 +120,7 @@ int main(int argc, char* argv[])
 	}
 	dev_init();
 	alloc_init();
-	sh_init();
+	texts = sh_init();
 	lex_init();
 	p_init(lex_get);
 	//p_parse();
@@ -135,7 +136,7 @@ int main(int argc, char* argv[])
 	gen_shut();
 	p_shut();
 	lex_shut();
-	sh_shut();
+	sh_shut(texts);
 	dev_shut();
 	alloc_shut();
 #ifdef DEV
